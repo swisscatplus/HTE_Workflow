@@ -347,7 +347,7 @@ def main() -> None:
     vol_available = solvent_vol  # Check if there is a second stock solution required anywhere, adjust vol_available adequately
     stock_reagents = [r for r in reagents if r.stock_solution]
     if stock_reagents:
-        print("Several stock reagents found, adjusting available volume accordingly.")
+        print("Stock reagents found, adjusting available volume accordingly.")
         overlap_reagents = pd.DataFrame(np.zeros(plate.template.shape), index=plate.template.index,columns=plate.template.columns)
         for reagent in stock_reagents:
             overlap_reagents += reagent.locations.astype(int)
