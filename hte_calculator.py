@@ -1,7 +1,8 @@
 import argparse
+import importlib.util
 import string
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 import math
 
 import pandas as pd
@@ -23,6 +24,59 @@ def fetch_molar_mass(inchikey: str) -> float:
     # so parse only the first line to avoid conversion errors
     first_line = text.splitlines()[0]
     return float(first_line)
+
+
+def load_preloaded_reagents(path: str, plate: "Plate") -> Tuple[List["Reagent"], List["Solvent"]]:
+    """Load reagents from a Python file and return lists of Reagent and Solvent objects."""
+    if not path:
+        return [], []
+    spec = importlib.util.spec_from_file_location("preloaded", path)
+    if spec is None or spec.loader is None:
+        raise FileNotFoundError(f"Cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    data = getattr(module, "PRELOADED_REAGENTS", [])
+    reagents: List[Reagent] = []
+    solvents: List[Solvent] = []
+    for entry in data:
+        if isinstance(entry, Reagent):
+            reagent = entry
+        else:
+            reagent = Reagent(
+                name=entry.get("name", ""),
+                inchikey=entry.get("inchikey", ""),
+                rtype=entry.get("rtype", ""),
+                equivalents=entry.get("equivalents", 0.0),
+                is_limiting=entry.get("is_limiting", False),
+                density=entry.get("density"),
+                concentration=entry.get("concentration"),
+                stock_solution=entry.get("stock_solution", False),
+            )
+        if not reagent.name:
+            reagent.name = input("Reagent name: ").strip()
+        if not reagent.inchikey:
+            reagent.inchikey = input(f"InChIKey for {reagent.name}: ").strip()
+        if not reagent.rtype:
+            reagent.rtype = input(f"Type for {reagent.name} [solid/liquid/solvent]: ").strip().lower()
+        if reagent.rtype == "solvent":
+            solv = Solvent(name=reagent.name, inchikey=reagent.inchikey)
+            solv.locations = plate.parse_location(f"solvent {solv.name}")
+            solvents.append(solv)
+            continue
+        if reagent.equivalents == 0.0:
+            reagent.equivalents = float(input(f"Equivalents for {reagent.name}: "))
+        if reagent.rtype == "liquid":
+            if reagent.density is None:
+                d = input(f"Density for {reagent.name} (g/mL, blank if not known): ").strip()
+                if d:
+                    reagent.density = float(d)
+            if reagent.concentration is None:
+                c = input(f"Concentration for {reagent.name} (mol/L, blank if not known): ").strip()
+                if c:
+                    reagent.concentration = float(c)
+        reagent.locations = plate.parse_location(f"reagent {reagent.name}")
+        reagents.append(reagent)
+    return reagents, solvents
 
 
 
@@ -130,8 +184,12 @@ class Plate:
         return df
 
 
-def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], plate: Plate, output: str) -> None:
-    """Create a simple heatmap showing where each reagent/solvent is dispensed."""
+def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], plate: Plate, final_volume: pd.DataFrame, output: str) -> None:
+    """Create heatmaps showing where each reagent/solvent is dispensed.
+
+    Reagents are colour coded by their final concentration in each well while
+    solvents remain binary.
+    """
     items = reagents + solvents
     if not items:
         return
@@ -143,8 +201,15 @@ def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], pla
     for ax in axes[n:]:
         ax.axis('off')
     for ax, item in zip(axes, items):
-        mat = item.locations.astype(int)
-        ax.imshow(mat.values, cmap="Blues", vmin=0, vmax=1)
+        if isinstance(item, Reagent) and not item.moles.empty:
+            conc = item.moles / (final_volume / 1_000_000)
+            conc = conc.fillna(0.0)
+            im = ax.imshow(conc.values, cmap="viridis")
+            cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cbar.set_label("M")
+        else:
+            mat = item.locations.astype(int)
+            im = ax.imshow(mat.values, cmap="Blues", vmin=0, vmax=1)
         ax.set_xticks(range(plate.cols))
         ax.set_xticklabels(plate.template.columns)
         ax.set_yticks(range(plate.rows))
@@ -158,6 +223,7 @@ def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], pla
 def main() -> None:
     parser = argparse.ArgumentParser(description="HTE Dispense Calculator")
     parser.add_argument("--output", default=None, help="Excel output file")
+    parser.add_argument("--preload", default=None, help="Path to python file with PRELOADED_REAGENTS list")
     args = parser.parse_args()
 
     layout = input("Plate layout [24/48/96]: ").strip()
@@ -176,8 +242,12 @@ def main() -> None:
     solvents: List[Solvent] = []
     stock_solutions: List[Stock_Solution] = []
 
+    if args.preload:
+        loaded_reagents, loaded_solvents = load_preloaded_reagents(args.preload, plate)
+        reagents.extend(loaded_reagents)
+        solvents.extend(loaded_solvents)
 
-    limiting_set = False
+    limiting_set = any(r.is_limiting for r in reagents)
     while True:
         while True:
             name = input("Reagent name (blank to finish): ").strip()
@@ -349,7 +419,7 @@ def main() -> None:
     print(f"Results written to {output_file}")
 
     viz_file = f"{reaction_name}_layout.png"
-    visualize_distribution(reagents, solvents, plate, viz_file)
+    visualize_distribution(reagents, solvents, plate, final_volume, viz_file)
     print(f"Layout visualization saved to {viz_file}")
 
 
