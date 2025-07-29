@@ -313,7 +313,7 @@ def main() -> None:
     for reagent in reagents:
         reagent.ensure_molar_mass()
         moles = moles_limiting * reagent.equivalents * reagent.locations
-        reagent.moles = moles_limiting * reagent.equivalents
+        reagent.moles = moles_limiting * reagent.equivalents * reagent.locations
         if reagent.rtype == 'solid':
             mass_g = moles * reagent.molar_mass
             if reagent.stock_solution:
