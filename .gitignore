@@ -1,4 +1,8 @@
 __pycache__/ 
 .idea/ 
-*.pyc 
+*.pyc
+*.xls
+*.xlsx
+*.csv
+*.png
 env/ 

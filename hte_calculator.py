@@ -35,6 +35,8 @@ class Reagent:
     concentration: Optional[float] = None  # mol/L
     locations: pd.DataFrame = field(default_factory=pd.DataFrame)
     molar_mass: Optional[float] = None
+    stock_solution: Optional[bool] =False
+    moles: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     def ensure_molar_mass(self) -> None:
         if self.molar_mass is None:
@@ -47,6 +49,14 @@ class Solvent:
     inchikey: str
     locations: pd.DataFrame = field(default_factory=pd.DataFrame)
 
+@dataclass
+class Stock_Solution:
+    name: str
+    reagent: Reagent
+    solvent: Solvent
+    locations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    concentration: Optional[float] = None
+    volume_dispensed: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 class Plate:
     def __init__(self, rows: int, cols: int) -> None:
@@ -160,6 +170,7 @@ def main() -> None:
 
     reagents: List[Reagent] = []
     solvents: List[Solvent] = []
+    stock_solutions: List[Stock_Solution] = []
 
     limiting_set = False
     while True:
@@ -189,9 +200,10 @@ def main() -> None:
                 c = input("Concentration (mol/L, blank if not known): ").strip()
                 if c:
                     concentration = float(c)
+            stock_solution = input("Is this a stock solution? [y/N]: ").strip().lower() == 'y'
             reagent = Reagent(name=name, inchikey=inchikey, rtype=rtype,
                               equivalents=eqv, is_limiting=is_limiting,
-                              density=density, concentration=concentration)
+                              density=density, concentration=concentration, stock_solution=stock_solution)
             reagent.locations = plate.parse_location(f"reagent {name}")
             reagents.append(reagent)
         all_names = [r.name for r in reagents] + [s.name for s in solvents]
@@ -219,6 +231,7 @@ def main() -> None:
     for reagent in reagents:
         reagent.ensure_molar_mass()
         moles = moles_limiting * reagent.equivalents * reagent.locations
+        reagent.moles = moles_limiting * reagent.equivalents
         if reagent.rtype == 'solid':
             mass_g = moles * reagent.molar_mass
             results[f"{reagent.name} (mg)"] = mass_g * 1000
@@ -235,10 +248,47 @@ def main() -> None:
             totals[f"{reagent.name} (uL)"] = (volume_l * 1_000_000).sum().sum()
 
     volume_used = pd.DataFrame(0.0, index=plate.template.index, columns=plate.template.columns)
+
     for key, df in results.items():
         if key.endswith('(uL)'):
             volume_used += df
     solvent_vol = final_volume - volume_used
+
+    for reagent in reagents:
+        if reagent.stock_solution:
+            solvents_required = []
+            unique_solvents_required = []
+            for solvent in solvents:
+                solvent_overlap = reagent.locations & solvent.locations
+                if solvent_overlap.any().any():
+                    solvents_required.append(solvent)
+            if solvents_required:
+                seen = set()
+                for s in solvents_required:
+                    if id(s) not in seen:
+                        unique_solvents_required.append(s)
+                        seen.add(id(s))
+            solvents_required = unique_solvents_required
+            vol_available = solvent_vol # Check if there is a second stock solution required anywhere, adjust vol_available adequately
+            for solvent in solvents_required:
+                stock_solution_volume = vol_available[reagent.locations & solvent.locations].min().min()
+                if stock_solution_volume <= 0:
+                    raise RuntimeError(f"Not enough space for stock solution {reagent.name} in {solvent.name}")
+                stock_solution_dispensed = pd.DataFrame(0.0, index=plate.template.index, columns=plate.template.columns)
+                stock_solution_dispensed[reagent.locations & solvent.locations] = stock_solution_volume
+                new_stock_solution = Stock_Solution(
+                    name=f"{reagent.name} in {solvent.name}",
+                    reagent=reagent,
+                    solvent=solvent,
+                    locations=reagent.locations & solvent.locations,
+                    concentration=reagent.moles/stock_solution_volume *1000000, # Am i putting a df into a float?
+                    volume_dispensed=stock_solution_dispensed
+                )
+                solvent_vol = solvent_vol - stock_solution_dispensed
+                stock_solutions.append(new_stock_solution)
+                results[f"{new_stock_solution.name} (uL)"] = stock_solution_dispensed
+                totals[f"{new_stock_solution.name} {new_stock_solution.concentration} M (uL)"] = stock_solution_dispensed.sum().sum()
+
     if solvents:
         each = solvent_vol / len(solvents)
         for solv in solvents:
