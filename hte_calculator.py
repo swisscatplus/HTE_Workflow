@@ -2,9 +2,11 @@ import argparse
 import string
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
+import math
 
 import pandas as pd
 import requests
+import matplotlib.pyplot as plt
 
 PUBCHEM_URL = (
     "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{}/property/MolecularWeight/TXT"
@@ -96,8 +98,6 @@ class Plate:
             for row in self.template.index:
                 val = float(input(f"{label} for row {row}: "))
                 df.loc[row, :] = val
-        elif choice == 'c':
-            pass
         elif choice == 'C':
             for col in self.template.columns:
                 val = float(input(f"{label} for column {col}: "))
@@ -112,50 +112,89 @@ class Plate:
         return df
 
 
+def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], plate: Plate, output: str) -> None:
+    """Create a simple heatmap showing where each reagent/solvent is dispensed."""
+    items = reagents + solvents
+    if not items:
+        return
+    n = len(items)
+    cols = min(4, n)
+    rows = math.ceil(n / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
+    axes = axes.flatten() if n > 1 else [axes]
+    for ax in axes[n:]:
+        ax.axis('off')
+    for ax, item in zip(axes, items):
+        mat = item.locations.astype(int)
+        ax.imshow(mat.values, cmap="Blues", vmin=0, vmax=1)
+        ax.set_xticks(range(plate.cols))
+        ax.set_xticklabels(plate.template.columns)
+        ax.set_yticks(range(plate.rows))
+        ax.set_yticklabels(plate.template.index)
+        ax.set_title(item.name)
+    plt.tight_layout()
+    plt.savefig(output)
+    plt.close(fig)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="HTE Dispense Calculator")
-    parser.add_argument("--rows", type=int, default=8, help="number of plate rows")
-    parser.add_argument("--cols", type=int, default=12, help="number of plate columns")
-    parser.add_argument("--output", default="hte_output.xlsx", help="Excel output file")
+    parser.add_argument("--output", default=None, help="Excel output file")
     args = parser.parse_args()
 
-    plate = Plate(args.rows, args.cols)
+    layout = input("Plate layout [24/48/96]: ").strip()
+    while layout not in {"24", "48", "96"}:
+        layout = input("Please enter 24, 48 or 96: ").strip()
+    layout = int(layout)
+    mapping = {24: (4, 6), 48: (6, 8), 96: (8, 12)}
+    rows, cols = mapping[layout]
+
+    plate = Plate(rows, cols)
+
+    reaction_name = input("Reaction name: ").strip()
+    output_file = args.output or f"{reaction_name}.xlsx"
 
     reagents: List[Reagent] = []
     solvents: List[Solvent] = []
 
     limiting_set = False
     while True:
-        name = input("Reagent name (blank to finish): ").strip()
-        if not name:
+        while True:
+            name = input("Reagent name (blank to finish): ").strip()
+            if not name:
+                break
+            inchikey = input("InChIKey: ").strip()
+            rtype = input("Type [solid/liquid/solvent]: ").strip().lower()
+            if rtype == 'solvent':
+                solv = Solvent(name=name, inchikey=inchikey)
+                solv.locations = plate.parse_location(f"solvent {name}")
+                solvents.append(solv)
+                continue
+            eqv = float(input("Equivalents: "))
+            is_limiting = False
+            if not limiting_set:
+                ans = input("Is this the limiting reagent? [y/N]: ").strip().lower()
+                is_limiting = ans == 'y'
+                limiting_set = is_limiting
+            density = None
+            concentration = None
+            if rtype == 'liquid':
+                d = input("Density (g/mL, blank if not known): ").strip()
+                if d:
+                    density = float(d)
+                c = input("Concentration (mol/L, blank if not known): ").strip()
+                if c:
+                    concentration = float(c)
+            reagent = Reagent(name=name, inchikey=inchikey, rtype=rtype,
+                              equivalents=eqv, is_limiting=is_limiting,
+                              density=density, concentration=concentration)
+            reagent.locations = plate.parse_location(f"reagent {name}")
+            reagents.append(reagent)
+        all_names = [r.name for r in reagents] + [s.name for s in solvents]
+        print("Current reagents:", ", ".join(all_names))
+        cont = input("Add more reagents/solvents? [y/N]: ").strip().lower()
+        if cont != 'y':
             break
-        inchikey = input("InChIKey: ").strip()
-        rtype = input("Type [solid/liquid/solvent]: ").strip().lower()
-        if rtype == 'solvent':
-            solv = Solvent(name=name, inchikey=inchikey)
-            solv.locations = plate.parse_location(f"solvent {name}")
-            solvents.append(solv)
-            continue
-        eqv = float(input("Equivalents: "))
-        is_limiting = False
-        if not limiting_set:
-            ans = input("Is this the limiting reagent? [y/N]: ").strip().lower()
-            is_limiting = ans == 'y'
-            limiting_set = is_limiting
-        density = None
-        concentration = None
-        if rtype == 'liquid':
-            d = input("Density (g/mL, blank if not known): ").strip()
-            if d:
-                density = float(d)
-            c = input("Concentration (mol/L, blank if not known): ").strip()
-            if c:
-                concentration = float(c)
-        reagent = Reagent(name=name, inchikey=inchikey, rtype=rtype,
-                          equivalents=eqv, is_limiting=is_limiting,
-                          density=density, concentration=concentration)
-        reagent.locations = plate.parse_location(f"reagent {name}")
-        reagents.append(reagent)
 
     if not any(r.is_limiting for r in reagents):
         raise RuntimeError("No limiting reagent specified")
@@ -169,6 +208,9 @@ def main() -> None:
     limiting = next(r for r in reagents if r.is_limiting)
     limiting.ensure_molar_mass()
     moles_limiting = conc_limiting * (final_volume / 1_000_000)
+    missing_lim = (~limiting.locations) & (final_volume > 0)
+    if missing_lim.any().any():
+        print("Warning: Some wells have no limiting reagent.")
 
     for reagent in reagents:
         reagent.ensure_molar_mass()
@@ -213,10 +255,14 @@ def main() -> None:
 
     totals_series = pd.Series(totals, name='Total')
 
-    with pd.ExcelWriter(args.output) as writer:
+    with pd.ExcelWriter(output_file) as writer:
         df.to_excel(writer, sheet_name='per_well')
         totals_series.to_frame().to_excel(writer, sheet_name='totals')
-    print(f"Results written to {args.output}")
+    print(f"Results written to {output_file}")
+
+    viz_file = f"{reaction_name}_layout.png"
+    visualize_distribution(reagents, solvents, plate, viz_file)
+    print(f"Layout visualization saved to {viz_file}")
 
 
 if __name__ == '__main__':
