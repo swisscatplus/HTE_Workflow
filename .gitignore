@@ -5,4 +5,5 @@ __pycache__/
 *.xlsx
 *.csv
 *.png
+reagent_list.py
 env/ 

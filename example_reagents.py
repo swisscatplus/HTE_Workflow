@@ -1,15 +1,15 @@
 PRELOADED_REAGENTS = [
     {
-        "name": "Acetic anhydride",
-        "inchikey": "VZTDIZAGYMQNNU-UHFFFAOYSA-N",
+        "name": "1,6-Lutidine",
+        "inchikey": "OISVCGZHLKNMSJ-UHFFFAOYSA-N",
         "rtype": "liquid",
         "equivalents": 1.0,
         "is_limiting": True,
-        "density": 1.08
+        "density": 0.925
     },
     {
-        "name": "Pyridine",
-        "inchikey": "JUJWROOIHBZHMG-UHFFFAOYSA-N",
+        "name": "Methanol",
+        "inchikey": "OKKJLVBELUTLKV-UHFFFAOYSA-N",
         "rtype": "solvent"
     }
 ]

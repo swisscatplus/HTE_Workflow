@@ -47,10 +47,10 @@ def load_preloaded_reagents(path: str, plate: "Plate") -> Tuple[List["Reagent"],
                 inchikey=entry.get("inchikey", ""),
                 rtype=entry.get("rtype", ""),
                 equivalents=entry.get("equivalents", 0.0),
-                is_limiting=entry.get("is_limiting", False),
+                is_limiting=entry.get("is_limiting"),
                 density=entry.get("density"),
                 concentration=entry.get("concentration"),
-                stock_solution=entry.get("stock_solution", False),
+                stock_solution=entry.get("stock_solution"),
             )
         if not reagent.name:
             reagent.name = input("Reagent name: ").strip()
@@ -74,6 +74,12 @@ def load_preloaded_reagents(path: str, plate: "Plate") -> Tuple[List["Reagent"],
                 c = input(f"Concentration for {reagent.name} (mol/L, blank if not known): ").strip()
                 if c:
                     reagent.concentration = float(c)
+        if reagent.is_limiting is None:
+            is_limiting = input(f"Is {reagent.name} the limiting reagent? [y/N]: ").strip().lower()
+            reagent.is_limiting = is_limiting == 'y'
+        if reagent.stock_solution is None:
+            stock_solution = input(f"Is {reagent.name} a stock solution? [y/N]: ").strip().lower()
+            reagent.stock_solution = stock_solution == 'y'
         reagent.locations = plate.parse_location(f"reagent {reagent.name}")
         reagents.append(reagent)
     return reagents, solvents
@@ -367,7 +373,6 @@ def main() -> None:
             for solvent in solvents_required:
                 available_volumes_stock_solution = vol_available[reagent.locations & solvent.locations]
                 required_concentration = (reagent.moles / available_volumes_stock_solution).replace([np.inf, -np.inf], 0).fillna(0) * 1_000_000
-                print(required_concentration)
                 max_required_concentration = required_concentration.max().max()
 
                 # safeguard if too much liquid is requested
