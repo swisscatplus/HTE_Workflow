@@ -25,6 +25,7 @@ def fetch_molar_mass(inchikey: str) -> float:
     return float(first_line)
 
 
+
 @dataclass
 class Reagent:
     name: str
@@ -38,6 +39,7 @@ class Reagent:
     molar_mass: Optional[float] = None
     stock_solution: Optional[bool] =False
     moles: pd.DataFrame = field(default_factory=pd.DataFrame)
+
 
     def ensure_molar_mass(self) -> None:
         if self.molar_mass is None:
@@ -58,6 +60,7 @@ class Stock_Solution:
     locations: pd.DataFrame = field(default_factory=pd.DataFrame)
     concentration: Optional[float] = None
     volume_dispensed: pd.DataFrame = field(default_factory=pd.DataFrame)
+
 
 class Plate:
     def __init__(self, rows: int, cols: int) -> None:
@@ -173,6 +176,7 @@ def main() -> None:
     solvents: List[Solvent] = []
     stock_solutions: List[Stock_Solution] = []
 
+
     limiting_set = False
     while True:
         while True:
@@ -205,6 +209,7 @@ def main() -> None:
             reagent = Reagent(name=name, inchikey=inchikey, rtype=rtype,
                               equivalents=eqv, is_limiting=is_limiting,
                               density=density, concentration=concentration, stock_solution=stock_solution)
+
             reagent.locations = plate.parse_location(f"reagent {name}")
             reagents.append(reagent)
         all_names = [r.name for r in reagents] + [s.name for s in solvents]
@@ -241,6 +246,7 @@ def main() -> None:
             else:
                 results[f"{reagent.name} (mg)"] = mass_g * 1000
                 totals[f"{reagent.name} (mg)"] = (mass_g * 1000).sum().sum()
+
         else:
             mass_g = moles * reagent.molar_mass
             if reagent.concentration:
@@ -330,6 +336,7 @@ def main() -> None:
             print("Warning: total reagent volumes exceed final volume in some wells")
         else:
             print("No solvents specified, assuming all wells are dry.")
+
 
     df = pd.concat(results, axis=1)
     df.index.name = 'Row'
