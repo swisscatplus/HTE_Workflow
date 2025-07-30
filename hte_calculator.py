@@ -396,9 +396,10 @@ def main() -> None:
                 totals[f"{new_stock_solution.name} {new_stock_solution.concentration} M (uL)"] = stock_solution_dispensed.sum().sum()
 
     if solvents:
-        each = solvent_vol / len(solvents)
+        # Allocate the remaining volume to each solvent according to its
+        # location mask without averaging across solvents
         for solv in solvents:
-            vol = each * solv.locations
+            vol = solvent_vol * solv.locations
             results[f"{solv.name} (uL)"] = vol
             totals[f"{solv.name} (uL)"] = vol.sum().sum()
         if (solvent_vol < 0).any().any():
