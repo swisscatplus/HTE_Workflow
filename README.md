@@ -11,6 +11,7 @@ python hte_calculator.py [--preload my_reagents.py]
 The script will interactively prompt for reagent information and plate setup. Results are saved as an Excel file summarizing the amounts for each well and total consumption. If `--preload` is supplied, the given Python file must define `PRELOADED_REAGENTS`, a list of dictionaries describing reagents to load before prompting.
 
 During execution you will be asked for a reaction name (used for the Excel/figure filenames) and the desired plate layout (24, 48 or 96 wells). After entering reagents, the script displays the current list and lets you add more if needed. Warnings are shown if any well lacks solvent or the limiting reagent. A colour-coded layout image is also created for quick visual inspection of reagent distribution.
+Solvent amounts are applied directly according to each solvent's location mask rather than being averaged over all solvents.
 
 ## Requirements
 - Python 3.8+
