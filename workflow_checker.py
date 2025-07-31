@@ -1,5 +1,4 @@
 import argparse
-import re
 from typing import Dict, List, Tuple
 
 import openpyxl
@@ -109,10 +108,10 @@ NAME_MAP: Dict[str, str] = {
 }
 
 
-def fill_workflow(
-    calculator: str, workflow: str, output: str
-) -> None:
-    """Fill an empty workflow file with amounts from the calculator export."""
+def fill_workflow(calculator: str, workflow: str) -> None:
+    """Fill an empty workflow file with amounts from the calculator export.
+
+    The workflow file is modified in place."""
     wf_df, mapping = lp.read_experiment_definition(workflow)
     num_exp = len(mapping)
 
@@ -144,7 +143,7 @@ def fill_workflow(
             val = per_exp.at[exp_label, calc_name]
             ws.cell(row=excel_row, column=col_idx, value=val)
 
-    wb.save(output)
+    wb.save(workflow)
 
 
 def main() -> None:
@@ -153,8 +152,9 @@ def main() -> None:
     parser.add_argument("workflow", help="Workflow Excel file (empty)")
     parser.add_argument("--visualize", action="store_true", help="Run layout_parser to generate images")
     parser.add_argument(
-        "--output",
-        help="Write a filled workflow Excel file to this path",
+        "--fill",
+        action="store_true",
+        help="Write dispense amounts directly into the workflow file",
     )
     args = parser.parse_args()
 
@@ -168,9 +168,9 @@ def main() -> None:
     if len(calc_liquids) + len(calc_solvents) != wf_liquids:
         print("Warning: mismatch in number of liquid/solvent dispenses")
 
-    if args.output:
-        fill_workflow(args.calculator, args.workflow, args.output)
-        print(f"Filled workflow written to {args.output}")
+    if args.fill:
+        fill_workflow(args.calculator, args.workflow)
+        print(f"Workflow {args.workflow} updated")
 
     if args.visualize:
         lp.main()
