@@ -155,15 +155,37 @@ def plot_experiment_map(plate_layout: pd.DataFrame, output: str) -> None:
 
 
 def extract_workflow_steps(df: pd.DataFrame) -> List[str]:
-    """Return a list of workflow steps from the Excel sheet."""
+    """Return ordered workflow steps deduplicated by node id.
+
+    The Excel file may list multiple parameters for a single workflow node. We
+    use column ``ID.1`` which contains the node identifier to group those rows
+    together. For orbital shaker nodes, the heating/cooling value and rotation
+    speed are appended in parentheses.
+    """
+
     steps: List[str] = []
-    prev = None
-    for node in df.get('WF NODE', []):
-        if pd.isna(node):
+    seen_ids = set()
+    if 'ID.1' not in df.columns:
+        return steps
+
+    for node_id in df['ID.1']:
+        if pd.isna(node_id) or node_id in seen_ids:
             continue
-        if node != prev:
-            steps.append(str(node))
-            prev = node
+        group = df[df['ID.1'] == node_id]
+        name = str(group['WF NODE'].iloc[0])
+        if 'Orbital Shaker' in name:
+            heating = group.loc[group['PARAMETER'] == 'Heating/Cooling', 'DEFAULT']
+            speed = group.loc[group['PARAMETER'] == 'Rotation Speed', 'DEFAULT']
+            details: List[str] = []
+            if not heating.empty and pd.notna(heating.iloc[0]):
+                details.append(f"{heating.iloc[0]} °C")
+            if not speed.empty and pd.notna(speed.iloc[0]):
+                details.append(f"{speed.iloc[0]} rpm")
+            if details:
+                name += f" ({', '.join(details)})"
+        steps.append(name)
+        seen_ids.add(node_id)
+
     return steps
 
 
@@ -172,21 +194,35 @@ def plot_workflow(steps: List[str], output: str) -> None:
     if not steps:
         return
 
-    fig, ax = plt.subplots(figsize=(6, 0.8 * len(steps)))
+    height = max(2, 0.5 * len(steps))
+    fig, ax = plt.subplots(figsize=(8, height))
     ax.axis('off')
 
     box_height = 0.6
     for i, step in enumerate(steps):
         y = len(steps) - i - 1
-        ax.add_patch(plt.Rectangle((0.1, y - box_height / 2), 0.8, box_height, edgecolor='black', facecolor='lightgrey'))
-        ax.text(0.5, y, step, ha='center', va='center')
+        ax.add_patch(
+            plt.Rectangle(
+                (0.1, y - box_height / 2),
+                0.8,
+                box_height,
+                edgecolor="black",
+                facecolor="lightgrey",
+            )
+        )
+        ax.text(0.5, y, step, ha="center", va="center", wrap=True, fontsize=8)
         if i < len(steps) - 1:
-            ax.annotate('', xy=(0.5, y - box_height / 2), xytext=(0.5, y - 1 + box_height / 2), arrowprops=dict(arrowstyle='->'))
+            ax.annotate(
+                "",
+                xy=(0.5, y - box_height / 2),
+                xytext=(0.5, y - 1 + box_height / 2),
+                arrowprops=dict(arrowstyle="->"),
+            )
 
     ax.set_xlim(0, 1)
     ax.set_ylim(-0.5, len(steps) - 0.5)
-    plt.tight_layout()
-    plt.savefig(output)
+    fig.tight_layout()
+    fig.savefig(output, bbox_inches="tight")
     plt.close(fig)
 
 
