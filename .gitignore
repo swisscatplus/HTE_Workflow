@@ -1,9 +1,11 @@
-__pycache__/ 
-.idea/ 
+e
++1-0
+__pycache__/
+.idea/
 *.pyc
 *.xls
 *.xlsx
 *.csv
 *.png
 reagent_list.py
-env/ 
+env/

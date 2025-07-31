@@ -173,7 +173,16 @@ def main() -> None:
         print(f"Workflow {args.workflow} updated")
 
     if args.visualize:
-        lp.main()
+        # run layout_parser with the workflow file only so its own
+        # argument parser does not see the workflow checker's options
+        import sys
+
+        original = sys.argv
+        sys.argv = ["layout_parser.py", args.workflow]
+        try:
+            lp.main()
+        finally:
+            sys.argv = original
 
 
 if __name__ == "__main__":
