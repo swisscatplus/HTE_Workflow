@@ -29,24 +29,29 @@ def read_experiment_definition(path: str) -> Tuple[pd.DataFrame, Dict[int, str]]
 
 
 def map_experiments_to_wells(num_experiments: int) -> Tuple[pd.DataFrame, Dict[str, Tuple[str, int]]]:
+    """Return a plate layout mapping experiments column-wise."""
     layouts = {24: (4, 6), 48: (6, 8), 96: (8, 12)}
     if num_experiments not in layouts:
         raise ValueError(f"Unsupported number of experiments: {num_experiments}")
+
     rows, cols = layouts[num_experiments]
     row_labels = list(string.ascii_uppercase[:rows])
     col_labels = list(range(1, cols + 1))
+
     layout = pd.DataFrame(index=row_labels, columns=col_labels)
     mapping: Dict[str, Tuple[str, int]] = {}
+
     exp = 1
-    for r in row_labels:
-        for c in col_labels:
+    for c in col_labels:
+        for r in row_labels:
+            if exp > num_experiments:
+                break
             layout.loc[r, c] = f"Experiment {exp}"
             mapping[f"Experiment {exp}"] = (r, c)
             exp += 1
-            if exp > num_experiments:
-                break
         if exp > num_experiments:
             break
+
     return layout, mapping
 
 
@@ -114,16 +119,16 @@ def visualize_reagents(per_reagent: Dict[str, pd.DataFrame], final_volume: pd.Da
     for ax, (name, df) in zip(axes, per_reagent.items()):
         if 'microliter' in name.lower():
             conc = df / final_volume.replace(0, float('nan'))
-            mat = conc.values.astype(float).T
+            mat = conc.values.astype(float)
             im = ax.imshow(mat, cmap='viridis', origin='upper', vmin=0, vmax=conc.max().max())
             cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
             cbar.set_label('vol frac')
         else:
-            im = ax.imshow(df.values.astype(float).T, cmap='Blues', origin='upper')
-        ax.set_xticks(range(df.shape[0]))
-        ax.set_xticklabels(df.index)
-        ax.set_yticks(range(df.shape[1]))
-        ax.set_yticklabels(df.columns)
+            im = ax.imshow(df.values.astype(float), cmap='Blues', origin='upper')
+        ax.set_xticks(range(df.shape[1]))
+        ax.set_xticklabels(df.columns)
+        ax.set_yticks(range(df.shape[0]))
+        ax.set_yticklabels(df.index)
         ax.set_title(name)
     for ax in axes[n:]:
         ax.axis('off')
@@ -134,31 +139,40 @@ def visualize_reagents(per_reagent: Dict[str, pd.DataFrame], final_volume: pd.Da
 
 def plot_experiment_map(plate_layout: pd.DataFrame, output: str) -> None:
     """Visualize which well corresponds to which experiment."""
-    fig, ax = plt.subplots(figsize=(plate_layout.shape[0], plate_layout.shape[1]))
-    ax.imshow([[0] * plate_layout.shape[0]] * plate_layout.shape[1], cmap='Greys', vmin=0, vmax=1)
-    for i, col in enumerate(plate_layout.columns):
-        for j, row in enumerate(plate_layout.index):
+    fig, ax = plt.subplots(figsize=(plate_layout.shape[1], plate_layout.shape[0]))
+    ax.imshow([[0] * plate_layout.shape[1]] * plate_layout.shape[0], cmap='Greys', vmin=0, vmax=1)
+    for i, row in enumerate(plate_layout.index):
+        for j, col in enumerate(plate_layout.columns):
             label = plate_layout.loc[row, col]
             ax.text(j, i, label.split()[-1], ha='center', va='center', color='black')
-    ax.set_xticks(range(len(plate_layout.index)))
-    ax.set_xticklabels(plate_layout.index)
-    ax.set_yticks(range(len(plate_layout.columns)))
-    ax.set_yticklabels(plate_layout.columns)
+    ax.set_xticks(range(len(plate_layout.columns)))
+    ax.set_xticklabels(plate_layout.columns)
+    ax.set_yticks(range(len(plate_layout.index)))
+    ax.set_yticklabels(plate_layout.index)
     plt.tight_layout()
     plt.savefig(output)
     plt.close(fig)
 
 
-def plot_workflow(solids: List[str], liquids: List[str], output: str) -> None:
-    """Create a very simple workflow diagram."""
-    steps = ['Start']
-    if solids:
-        steps.append(f'Dispense solids ({len(solids)})')
-    if liquids:
-        steps.append(f'Dispense liquids ({len(liquids)})')
-    steps.extend(['Stir', 'Heat', 'Wait', 'End'])
+def extract_workflow_steps(df: pd.DataFrame) -> List[str]:
+    """Return a list of workflow steps from the Excel sheet."""
+    steps: List[str] = []
+    prev = None
+    for node in df.get('WF NODE', []):
+        if pd.isna(node):
+            continue
+        if node != prev:
+            steps.append(str(node))
+            prev = node
+    return steps
 
-    fig, ax = plt.subplots(figsize=(4, 1 + len(steps) * 0.8))
+
+def plot_workflow(steps: List[str], output: str) -> None:
+    """Plot the workflow based on extracted steps."""
+    if not steps:
+        return
+
+    fig, ax = plt.subplots(figsize=(6, 0.8 * len(steps)))
     ax.axis('off')
 
     box_height = 0.6
@@ -187,6 +201,7 @@ def main() -> None:
 
     df, mapping = read_experiment_definition(args.excel)
     layout_df, totals, final_vol, plate_layout, per_reagent, (solids, liquids) = build_layout(df, mapping)
+    steps = extract_workflow_steps(df)
 
     with pd.ExcelWriter(args.output) as writer:
         layout_df.to_excel(writer, sheet_name='per_well')
@@ -197,7 +212,7 @@ def main() -> None:
 
     visualize_reagents(per_reagent, final_vol, args.image)
     plot_experiment_map(plate_layout, args.map)
-    plot_workflow(solids, liquids, args.workflow)
+    plot_workflow(steps, args.workflow)
     print(f'Images saved to {args.image}, {args.map} and {args.workflow}')
 
 
