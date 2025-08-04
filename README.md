@@ -63,9 +63,12 @@ the reagent distribution and workflow steps.
 ### Complete workflow
 
 1. Run `hte_calculator.py` to produce `actual.xlsx`.
-2. Run `workflow_checker.py actual.xlsx empty.xlsx --fill` to populate the
+2. Fill in the virtual twin in ArcSuite and make sure the product names match the ones
+   in `actual.xlsx`.
+3. Download the empty workflow file and fill in the product names and reaction conditions.
+4. Run `workflow_checker.py actual.xlsx empty.xlsx --fill` to populate the
    workflow file with dispense volumes.
-3. (Optional) Re-run with `--visualize` to create layout images for review.
+5. (Optional) Re-run with `--visualize` to create layout images for review.
 
 
 ## Visualize Existing Workflow
