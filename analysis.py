@@ -5,8 +5,6 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from layout_parser import read_experiment_definition, map_experiments_to_wells
-
 
 def load_calibration_data(folder: str) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
     """Return calibration info mapping compound to signal and fit data.
@@ -110,30 +108,55 @@ def process_file(
         areas[comp] = float(area_val)
     return areas, name_map, internal_std
 
+
+def load_actual_layout(path: str) -> pd.DataFrame:
+    """Parse ``actual.xlsx`` produced by ``hte_calculator`` and return layout."""
+    per = pd.read_excel(path, sheet_name="per_well", header=[0, 1])
+    rows = per.iloc[1:, 0].astype(str).tolist()
+    first_reagent = per.columns[1][0]
+    cols = [int(c[1]) for c in per.columns if c[0] == first_reagent]
+    layout = pd.DataFrame(index=rows, columns=cols)
+    exp = 1
+    for r in rows:
+        for c in cols:
+            layout.loc[r, c] = exp
+            exp += 1
+    return layout
+
+
 def build_matrix(
     data: Dict[str, Dict[int, float]],
-    layout_path: str,
+    layout: Optional[pd.DataFrame],
 ) -> pd.DataFrame:
-    """Arrange compound data into plate layout using provided layout file."""
-    _, mapping = read_experiment_definition(layout_path)
-    num_experiments = len(mapping)
-    plate_layout, well_map = map_experiments_to_wells(num_experiments)
-    per_comp: Dict[str, pd.DataFrame] = {}
+    """Arrange compound data into plate layout or simple experiment order."""
+    if layout is not None:
+        exp_to_rc: Dict[int, Tuple[str, int]] = {}
+        for r in layout.index:
+            for c in layout.columns:
+                exp = int(layout.loc[r, c])
+                exp_to_rc[exp] = (r, c)
+        per_comp: Dict[str, pd.DataFrame] = {}
+        for comp, exp_map in data.items():
+            mat = pd.DataFrame(float("nan"), index=layout.index, columns=layout.columns)
+            for exp, val in exp_map.items():
+                if exp in exp_to_rc:
+                    r, c = exp_to_rc[exp]
+                    mat.loc[r, c] = val
+            per_comp[comp] = mat
+        return pd.concat(per_comp, axis=1)
+    # fallback: simple experiment number ordering
+    all_exps = sorted({e for mapping in data.values() for e in mapping})
+    df = pd.DataFrame(index=all_exps)
     for comp, exp_map in data.items():
-        mat = pd.DataFrame(float("nan"), index=plate_layout.index, columns=plate_layout.columns)
-        for exp, val in exp_map.items():
-            label = f"Experiment {exp}"
-            if label in well_map:
-                r, c = well_map[label]
-                mat.loc[r, c] = val
-        per_comp[comp] = mat
-    return pd.concat(per_comp, axis=1)
+        df[comp] = [exp_map.get(exp, float("nan")) for exp in all_exps]
+    return df
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze HTE data files")
     parser.add_argument("folder", help="Folder with analysis CSV files")
     parser.add_argument("--output", default="analysis_output.xlsx", help="Output Excel file")
+    parser.add_argument("--layout", help="Path to actual.xlsx for layout ordering", default=None)
     args = parser.parse_args()
 
     calibrations, signal_names = load_calibration_data(args.folder)
@@ -165,13 +188,17 @@ def main() -> None:
                 ratio_total.setdefault(comp, {})[exp] = area / total_non_is
             if comp in calibrations and internal_std and internal_std in areas and areas[internal_std]:
                 ratio_is.setdefault(comp, {})[exp] = area / areas[internal_std]
-    layout = input("Path to layout Excel file for ordering: ").strip()
-    if not layout:
-        print("Layout file required; aborting")
-        return
-    area_df = build_matrix(area_data, layout)
-    total_df = build_matrix(ratio_total, layout)
-    is_df = build_matrix(ratio_is, layout)
+    layout_path = args.layout or input("Path to actual.xlsx for ordering (blank for none): ").strip()
+    layout_df: Optional[pd.DataFrame] = None
+    if layout_path:
+        try:
+            layout_df = load_actual_layout(layout_path)
+        except Exception as exc:
+            print(f"Could not parse layout: {exc}; using experiment number order")
+            layout_df = None
+    area_df = build_matrix(area_data, layout_df)
+    total_df = build_matrix(ratio_total, layout_df)
+    is_df = build_matrix(ratio_is, layout_df)
     with pd.ExcelWriter(args.output) as writer:
         area_df.to_excel(writer, sheet_name="area")
         total_df.to_excel(writer, sheet_name="area_fraction")
