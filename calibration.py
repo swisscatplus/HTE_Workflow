@@ -35,17 +35,20 @@ def parse_filename(path: str) -> Tuple[str, float]:
     return product, concentration
 
 
-def select_signal(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+def select_signal(df: pd.DataFrame, signal) -> Tuple[pd.DataFrame, str]:
     """Prompt user to choose a signal description and filter rows."""
     sig_cols = [c for c in df.columns if "signal" in c.lower()]
     if not sig_cols:
         raise ValueError("No signal description column found in file")
     sig_col = sig_cols[0]
-    print("Available signals:")
-    for s in df[sig_col].dropna().unique():
-        print(f"  {s}")
-    user_sig = input("Enter signal description to use: ").strip()
-    filtered = df[df[sig_col].astype(str).str.contains(user_sig)]
+    if signal == None:
+        print("Available signals:")
+        for s in df[sig_col].dropna().unique():
+            print(f"  {s}")
+        user_sig = input("Enter signal description to use: ").strip()
+    else:
+        user_sig = signal
+    filtered = df[df[sig_col].astype(str).str.contains(user_sig, regex=False)]
     if filtered.empty:
         raise ValueError(f"No rows matched signal description '{user_sig}'")
     return filtered, user_sig
@@ -55,18 +58,20 @@ def handle_rows(
     df: pd.DataFrame,
     product: str,
     internal_std_name: Optional[str],
-    internal_std_conc: Optional[float]
+    internal_std_conc: Optional[float],
+    actual_product_names: dict,
 ) -> Tuple[dict, Optional[str], Optional[float]]:
     """Process filtered rows, identify product and internal standard, compute ratios."""
     name_cols = [c for c in df.columns if "name" in c.lower()]
     area_cols = [c for c in df.columns if "area" in c.lower()]
-    rt_cols = [c for c in df.columns if c.lower() in ("rt", "retention time", "retention_time")]
+    rt_cols = [c for c in df.columns if c.lower() in ("rt", "retention time", "retention_time", "rt (min)")]
     if not name_cols or not area_cols:
         raise ValueError("Required columns 'name' and 'area' not found")
     name_col = name_cols[0]
     area_col = area_cols[0]
     rt_col = rt_cols[0] if rt_cols else None
 
+    comp_name = None
     product_area = None
     is_area = None
     other_area = 0.0
@@ -74,9 +79,12 @@ def handle_rows(
     for _, row in df.iterrows():
         name = str(row.get(name_col, "")).strip()
         if not name or name.lower() == "nan":
-            name = input("Unnamed signal detected. Provide a compound name (blank to skip): ").strip()
-            if not name:
+            area_val = row.get(area_col)
+            if pd.isna(area_val):
                 continue
+            area_val = float(area_val)
+            other_area += area_val
+            continue
         if rt_col and pd.isna(row.get(rt_col)):
             continue
         area_val = row.get(area_col)
@@ -103,21 +111,23 @@ def handle_rows(
             continue
 
         # Non internal standard entries
-        comp_name = input(f"Enter compound name for '{name}': ").strip() or name
-        if comp_name == product:
-            if product_area is not None:
-                raise ValueError("Multiple product entries found")
-            product_area = area_val
+        if name in actual_product_names:
+            comp_name = actual_product_names[name]
         else:
-            other_area += area_val
+            comp_name = input(f"Enter compound name for '{name}': ").strip() or product
+            actual_product_names[name] = comp_name
+        if product_area is not None:
+            raise ValueError("Multiple product entries found")
+        product_area = area_val
 
     if product_area is None or is_area is None:
         raise ValueError("Internal standard or product peak missing")
 
     ratio = product_area / is_area
-    combined_ratio = (product_area + is_area) / other_area if other_area else np.nan
+    combined_ratio = (product_area + is_area) / (other_area + product_area + is_area) if other_area else float(1.0)
     return {
         "product": product,
+        "compound_name": comp_name,
         "area_product": product_area,
         "area_internal_standard": is_area,
         "ratio": ratio,
@@ -129,6 +139,9 @@ def analyze(data: pd.DataFrame) -> None:
     """Group data by product, plot calibration curves, and save to Excel."""
     for product, group in data.groupby("product"):
         signals = group["signal"].unique()
+        comp_name = group["compound_name"].unique()
+        if len(comp_name) != 1:
+            raise ValueError(f"Inconsistent compound names for product '{product}'")
         if len(signals) != 1:
             raise ValueError(f"Inconsistent signal descriptions for product '{product}'")
         concentrations = group["concentration"].astype(float).to_numpy()
@@ -140,6 +153,8 @@ def analyze(data: pd.DataFrame) -> None:
             r_value = np.corrcoef(concentrations, ratios)[0, 1]
         r_squared = r_value ** 2
         mean_combined = group["combined_ratio"].mean()
+        print(f"Analyzing {comp_name[0]} ({product}):")
+        print(f"  Slope: {slope:.4f}, Intercept: {intercept:.4f}, R^2: {r_squared:.4f}, Ratio to noise: {mean_combined:.4f}")
 
         # Plot
         x_vals = np.linspace(concentrations.min(), concentrations.max(), 100)
@@ -149,24 +164,25 @@ def analyze(data: pd.DataFrame) -> None:
         plt.plot(x_vals, y_vals, color="red", label="fit")
         plt.xlabel("Concentration (mM)")
         plt.ylabel("Area_product / Area_IS")
-        plt.title(f"Calibration for {product}")
+        plt.title(f"Calibration for {comp_name[0]}")
         plt.legend()
-        out_plot = f"calibration_{product}.png"
+        out_plot = f"calibration_{comp_name[0]}.png"
         plt.tight_layout()
         plt.savefig(out_plot)
         plt.close()
         print(f"Saved plot to {out_plot}")
 
         # Save to Excel
-        out_file = f"calibration_{product}.xlsx"
+        out_file = f"calibration_{comp_name[0]}.xlsx"
         with pd.ExcelWriter(out_file) as writer:
             group.to_excel(writer, index=False, sheet_name="data")
             pd.DataFrame({
                 "slope": [slope],
                 "intercept": [intercept],
                 "r_squared": [r_squared],
-                "mean_combined_ratio": [mean_combined],
+                "ratio_to_noise": [mean_combined],
             }).to_excel(writer, index=False, sheet_name="fit")
+        print(f"Saved calibration data to {out_file}")
 
 
 def get_calibration_files(folder: str) -> List[str]:
@@ -194,14 +210,16 @@ def main() -> None:
         raise ValueError("No calibration csv files found in the provided folder")
 
     results = []
+    actual_product_names = {}
     internal_std_name: Optional[str] = None
     internal_std_conc: Optional[float] = None
+    signal: Optional[str] = None
     for path in files:
         product, concentration = parse_filename(path)
         df = pd.read_csv(path)
-        filtered, signal = select_signal(df)
+        filtered, signal = select_signal(df, signal)
         record, internal_std_name, internal_std_conc = handle_rows(
-            filtered, product, internal_std_name, internal_std_conc
+            filtered, product, internal_std_name, internal_std_conc, actual_product_names
         )
         record.update({
             "file": os.path.basename(path),
