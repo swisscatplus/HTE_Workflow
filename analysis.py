@@ -52,7 +52,8 @@ def parse_experiment_number(path: str) -> int:
     base = os.path.basename(path)
     name = os.path.splitext(base)[0]
     parts = name.split("_")
-    plate_pos = parts[-1]
+    analysis_pos = parts[-1]
+    plate_id, plate_pos = analysis_pos.split("-")  # Implement multiple plate IDs if needed
     match = re.fullmatch(r"([A-Za-z])(\d+)", plate_pos)
     if not match:
         raise ValueError(f"Cannot parse plate position from {base}")
@@ -71,10 +72,10 @@ def process_file(
 ) -> Tuple[Dict[str, float], Dict[str, str], Optional[str]]:
     """Extract areas per compound from a single analysis file."""
     df = pd.read_csv(path)
-    sig_col = next((c for c in df.columns if "signal" in c.lower()), None)
+    sig_col = next((c for c in df.columns if "signal description" in c.lower()), None)
     name_col = next((c for c in df.columns if "name" in c.lower()), None)
     area_col = next((c for c in df.columns if "area" in c.lower()), None)
-    rt_col = next((c for c in df.columns if c.lower() in ("rt", "retention time", "retention_time")), None)
+    rt_col = next((c for c in df.columns if c.lower() in ("rt", "retention time", "retention_time", "rt (min)")), None)
     if not sig_col or not name_col or not area_col:
         return {}, name_map, internal_std
     filtered = df[df[sig_col].astype(str).isin(signal_names)]
@@ -84,6 +85,9 @@ def process_file(
     for _, row in filtered.iterrows():
         pname = str(row[name_col]).strip()
         if not pname or pname.lower() == "nan":
+            comp = str(row[rt_col]).strip()
+            area_val = row[area_col]
+            areas[comp] = float(area_val) if not pd.isna(area_val) else 0.0
             continue
         if pname not in name_map:
             print(f"Calibration compounds: {', '.join(calibrations.keys())}")
@@ -92,7 +96,7 @@ def process_file(
             ).strip().lower()
             if resp == "i":
                 if not internal_std:
-                    internal_std = input("Name of internal standard: ").strip()
+                    internal_std = "Internal Standard"
                 name_map[pname] = internal_std
             elif resp == "c":
                 choice = input(
