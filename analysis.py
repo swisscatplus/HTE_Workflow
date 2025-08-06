@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -168,6 +169,11 @@ def main() -> None:
     parser.add_argument("folder", help="Folder with analysis CSV files")
     parser.add_argument("--output", default="analysis_output.xlsx", help="Output Excel file")
     parser.add_argument("--layout", help="Path to actual.xlsx for layout ordering", default=None)
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate pie charts and heatmaps",
+    )
     args = parser.parse_args()
 
     calibrations, signal_names = load_calibration_data(args.folder)
@@ -228,6 +234,10 @@ def main() -> None:
             conc = (ratio_val - intercept) / slope
             n_prod = conc * (is_amount / is_conc)
             yield_percent = n_prod / scale * 100.0
+            if yield_percent > 100:
+                warnings.warn(
+                    f"Yield for {comp} in experiment {exp} exceeds 100%"
+                )
             yield_data.setdefault(comp, {})[exp] = yield_percent
 
     yield_df = build_matrix(yield_data, layout_df)
@@ -245,8 +255,9 @@ def main() -> None:
         ).to_excel(writer, sheet_name="info", index=False)
     print(f"Saved analysis to {args.output}")
 
-    generate_pie_plots(area_data, yield_data, calibrations, internal_std, layout_df)
-    generate_heatmaps(yield_df)
+    if args.visualize:
+        generate_pie_plots(area_data, yield_data, calibrations, internal_std, layout_df)
+        generate_heatmaps(yield_df)
 
 
 if __name__ == "__main__":
