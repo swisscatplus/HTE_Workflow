@@ -17,8 +17,8 @@ def load_layout(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     cols = [int(c[1]) for c in per.columns if c[0] == first_reagent]
     layout = pd.DataFrame(index=rows, columns=cols)
     exp = 1
-    for r in rows:
-        for c in cols:
+    for c in cols:
+        for r in rows:
             layout.loc[r, c] = exp
             exp += 1
     return layout, per
@@ -93,14 +93,14 @@ def build_matrix(data: Dict[str, Dict[int, float]], layout: pd.DataFrame) -> pd.
             exp_to_rc[exp] = (r, c)
     per_comp: Dict[str, pd.DataFrame] = {}
     for comp, exp_map in data.items():
-        mat = pd.DataFrame(float("nan"), index=layout.index, columns=layout.columns)
+        mat = pd.DataFrame(0.0, index=layout.index, columns=layout.columns)
         for exp, val in exp_map.items():
             if exp in exp_to_rc:
                 r, c = exp_to_rc[exp]
                 mat.loc[r, c] = val
         per_comp[comp] = mat
     if not per_comp:
-        return pd.DataFrame(index=layout.index, columns=layout.columns)
+        return pd.DataFrame(0.0, index=layout.index, columns=layout.columns)
     return pd.concat(per_comp, axis=1)
 
 
@@ -133,8 +133,10 @@ def generate_heatmaps(per_reagent: Dict[str, pd.DataFrame], prefix: str, center_
     for ax in axes[n:]:
         ax.axis("off")
     plt.tight_layout()
-    plt.savefig(f"{prefix}.png")
+    out_path = f"{prefix}.png"
+    plt.savefig(out_path)
     plt.close(fig)
+    print(f"Saved {out_path}")
 
 
 def main() -> None:
@@ -148,14 +150,16 @@ def main() -> None:
     intended_map, reagents = parse_actual_dispenses(per, layout)
     run_map = parse_runstatistics(args.runstatistics, reagents)
 
-    intended_df = build_matrix(intended_map, layout)
+    intended_df = build_matrix(intended_map, layout).fillna(0)
     run_df = build_matrix(run_map, layout)
-    run_df = run_df.reindex(columns=intended_df.columns)
+    run_df = run_df.reindex(columns=intended_df.columns).fillna(0)
     relative = (run_df - intended_df) / intended_df.replace(0, np.nan)
+    relative = relative.fillna(0)
 
     with pd.ExcelWriter(args.output) as writer:
         run_df.to_excel(writer, sheet_name="actual_dispenses")
         relative.to_excel(writer, sheet_name="relative_difference")
+    print(f"Saved analysis to {args.output}")
 
     run_dict = {comp: run_df[comp] for comp in run_df.columns.levels[0]}
     rel_dict = {comp: relative[comp] for comp in relative.columns.levels[0]}
