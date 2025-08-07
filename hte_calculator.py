@@ -2,6 +2,7 @@ import argparse
 import importlib.util
 import string
 from dataclasses import dataclass, field
+from operator import truediv
 from typing import List, Optional, Dict, Tuple
 import math
 
@@ -232,13 +233,28 @@ def main() -> None:
     parser.add_argument("--preload", default=None, help="Path to python file with PRELOADED_REAGENTS list")
     args = parser.parse_args()
 
-    layout = input("Plate layout [24/48/96]: ").strip()
-    while layout not in {"24", "48", "96"}:
-        layout = input("Please enter 24, 48 or 96: ").strip()
-    layout = int(layout)
-    mapping = {24: (4, 6), 48: (6, 8), 96: (8, 12)}
-    rows, cols = mapping[layout]
+    layout = input("Plate layout [24/48/96/custom]: ").strip()
+    while layout not in {"24", "48", "96", "custom"}:
+        layout = input("Please enter 24, 48, 96 or custom: ").strip()
 
+    if layout == 'custom':
+        dims = input("Enter custom plate dimensions (columns x rows or single number, e.g. 12x8 or 6): ").strip().lower()
+        while True:
+            try:
+                if 'x' in dims:
+                    cols, rows = map(int, dims.split('x'))
+                else:
+                    cols = int(dims)
+                    rows = 1
+                if cols <= 0 or rows <= 0:
+                    raise ValueError("Dimensions must be positive integers")
+                break
+            except ValueError:
+                dims = input("Invalid dimensions. Please enter in format 'columns x rows' or single number: ").strip().lower()
+    else:
+        layout = int(layout)
+        mapping = {24: (4, 6), 48: (6, 8), 96: (8, 12)}
+        rows, cols = mapping[layout]
     plate = Plate(rows, cols)
 
     reaction_name = input("Reaction name: ").strip()

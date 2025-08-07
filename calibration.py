@@ -136,7 +136,7 @@ def handle_rows(
     }, internal_std_name, internal_std_conc
 
 
-def analyze(data: pd.DataFrame) -> None:
+def analyze(data: pd.DataFrame, folder) -> None:
     """Group data by product, plot calibration curves, and save to Excel."""
     for product, group in data.groupby("product"):
         signals = group["signal"].unique()
@@ -174,7 +174,7 @@ def analyze(data: pd.DataFrame) -> None:
         print(f"Saved plot to {out_plot}")
 
         # Save to Excel
-        out_file = f"calibration_{comp_name[0]}.xlsx"
+        out_file = f"{folder}/calibration_{comp_name[0]}.xlsx"
         with pd.ExcelWriter(out_file) as writer:
             group.to_excel(writer, index=False, sheet_name="data")
             pd.DataFrame({
@@ -231,7 +231,7 @@ def main() -> None:
         results.append(record)
 
     data = pd.DataFrame(results)
-    analyze(data)
+    analyze(data, folder)
 
 
 if __name__ == "__main__":

@@ -125,6 +125,7 @@ def generate_pie_plots(
     fig_other.tight_layout()
     fig_other.savefig("pie_plots_others.png")
     plt.close(fig_other)
+    print("Saved pie plots to 'pie_plots.png' and 'pie_plots_others.png'")
 
 
 def generate_heatmaps(yield_df: pd.DataFrame) -> None:
@@ -143,3 +144,4 @@ def generate_heatmaps(yield_df: pd.DataFrame) -> None:
         plt.tight_layout()
         plt.savefig(f"heatmap_{comp}.png")
         plt.close()
+        print("Saved heatmap for", comp, "to 'heatmap_{}.png'".format(comp))
