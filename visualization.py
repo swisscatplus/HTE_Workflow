@@ -27,16 +27,27 @@ def generate_pie_plots(
     layout: Optional[pd.DataFrame],
 ) -> None:
     calibrated = list(calibrations.keys())
-    ordered_exps = _ordered_experiments(area_data, layout)
-
     if layout is not None:
+        # ensure experiments increase across rows, not down columns
+        if layout.shape[1] > 1 and layout.iloc[0, 1] - layout.iloc[0, 0] != 1:
+            vals = sorted(int(v) for v in layout.stack().dropna().values)
+            layout = layout.copy()
+            idx = 0
+            for r in layout.index:
+                for c in layout.columns:
+                    if pd.notna(layout.loc[r, c]):
+                        layout.loc[r, c] = vals[idx]
+                        idx += 1
         rows = list(layout.index)
         cols = list(layout.columns)
         nrows, ncols = len(rows), len(cols)
     else:
+        ordered_exps = _ordered_experiments(area_data, layout)
         nrows, ncols = 1, len(ordered_exps)
         rows = ["row"]
         cols = ordered_exps
+
+    ordered_exps = _ordered_experiments(area_data, layout)
 
     fig, axes = plt.subplots(nrows, ncols, figsize=(3 * ncols, 3 * nrows))
     fig_other, axes_other = plt.subplots(nrows, ncols, figsize=(3 * ncols, 3 * nrows))
@@ -104,8 +115,10 @@ def generate_pie_plots(
             ax_other.axis("equal")
 
     sm = cm.ScalarMappable(cmap="viridis", norm=Normalize(vmin=0, vmax=100))
-    fig.colorbar(sm, ax=axes.ravel().tolist(), shrink=0.6, label="Yield (%)")
-    fig.tight_layout()
+    fig.subplots_adjust(right=0.9)
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+    fig.colorbar(sm, cax=cbar_ax, label="Yield (%)")
+    fig.tight_layout(rect=[0, 0, 0.9, 1])
     fig.savefig("pie_plots.png")
     plt.close(fig)
 
