@@ -1,6 +1,8 @@
 import argparse
 import os
 import re
+import subprocess
+import sys
 import warnings
 from typing import Dict, List, Optional, Tuple
 
@@ -170,11 +172,26 @@ def main() -> None:
     parser.add_argument("--output", default="analysis_output.xlsx", help="Output Excel file")
     parser.add_argument("--layout", help="Path to actual.xlsx for layout ordering", default=None)
     parser.add_argument(
+        "--calibration",
+        action="store_true",
+        help="Run calibration.py before analysis",
+    )
+    parser.add_argument(
         "--visualize",
         action="store_true",
         help="Generate pie charts and heatmaps",
     )
     args = parser.parse_args()
+
+    if args.calibration:
+        subprocess.run(
+            [
+                sys.executable,
+                os.path.join(os.path.dirname(__file__), "calibration.py"),
+                args.folder,
+            ],
+            check=True,
+        )
 
     calibrations, signal_names = load_calibration_data(args.folder)
     if not signal_names:
