@@ -115,12 +115,10 @@ def generate_heatmaps(per_reagent: Dict[str, pd.DataFrame], prefix: str, center_
         axes = [axes]
     else:
         axes = axes.flatten()
-    vmax = None
-    if center_zero:
-        vmax = max(abs(df.values).max() for df in per_reagent.values())
     for ax, (name, df) in zip(axes, per_reagent.items()):
         mat = df.values.astype(float)
         if center_zero:
+            vmax = np.max(np.abs(mat))
             im = ax.imshow(mat, cmap="coolwarm", origin="upper", vmin=-vmax, vmax=vmax)
         else:
             im = ax.imshow(mat, cmap="viridis", origin="upper")
