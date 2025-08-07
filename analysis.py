@@ -1,9 +1,13 @@
 import argparse
 import os
 import re
+import subprocess
+import sys
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+from visualization import generate_pie_plots, generate_heatmaps
 
 
 def load_calibration_data(folder: str) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
@@ -33,7 +37,13 @@ def load_calibration_data(folder: str) -> Tuple[Dict[str, Dict[str, float]], Lis
         fit = pd.read_excel(path, sheet_name="fit")
         slope = float(fit.get("slope", [1.0])[0])
         intercept = float(fit.get("intercept", [0.0])[0])
-        calibrations[compound] = {"signal": signal, "slope": slope, "intercept": intercept}
+        is_conc = float(fit.get("internal_standard_concentration", [1.0])[0])
+        calibrations[compound] = {
+            "signal": signal,
+            "slope": slope,
+            "intercept": intercept,
+            "internal_standard_concentration": is_conc,
+        }
         signal_names.append(signal)
     return calibrations, signal_names
 
@@ -161,7 +171,27 @@ def main() -> None:
     parser.add_argument("folder", help="Folder with analysis CSV files")
     parser.add_argument("--output", default="analysis_output.xlsx", help="Output Excel file")
     parser.add_argument("--layout", help="Path to actual.xlsx for layout ordering", default=None)
+    parser.add_argument(
+        "--calibration",
+        action="store_true",
+        help="Run calibration.py before analysis",
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate pie charts and heatmaps",
+    )
     args = parser.parse_args()
+
+    if args.calibration:
+        subprocess.run(
+            [
+                sys.executable,
+                os.path.join(os.path.dirname(__file__), "calibration.py"),
+                args.folder,
+            ],
+            check=True,
+        )
 
     calibrations, signal_names = load_calibration_data(args.folder)
     if not signal_names:
@@ -203,11 +233,48 @@ def main() -> None:
     area_df = build_matrix(area_data, layout_df)
     total_df = build_matrix(ratio_total, layout_df)
     is_df = build_matrix(ratio_is, layout_df)
+
+    scale_in = input("Reaction scale in mmol: ").strip()
+    scale = float(scale_in) if scale_in else 1.0
+    is_amount_in = input("Internal standard added in mmol: ").strip()
+    is_amount = float(is_amount_in) if is_amount_in else 1.0
+
+    yield_data: Dict[str, Dict[int, float]] = {}
+    for comp, exp_map in ratio_is.items():
+        calib = calibrations.get(comp)
+        if not calib:
+            continue
+        slope = calib.get("slope", 1.0)
+        intercept = calib.get("intercept", 0.0)
+        is_conc = calib.get("internal_standard_concentration", 1.0)
+        for exp, ratio_val in exp_map.items():
+            conc = (ratio_val - intercept) / slope
+            n_prod = conc * (is_amount / is_conc)
+            yield_percent = n_prod / scale * 100.0
+            if yield_percent > 100:
+                warnings.warn(
+                    f"Yield for {comp} in experiment {exp} exceeds 100%"
+                )
+            yield_data.setdefault(comp, {})[exp] = yield_percent
+
+    yield_df = build_matrix(yield_data, layout_df)
+
     with pd.ExcelWriter(args.output) as writer:
         area_df.to_excel(writer, sheet_name="area")
         total_df.to_excel(writer, sheet_name="area_fraction")
         is_df.to_excel(writer, sheet_name="area_internal")
+        yield_df.to_excel(writer, sheet_name="yield")
+        pd.DataFrame(
+            {
+                "reaction_scale_mmol": [scale],
+                "internal_standard_mmol": [is_amount],
+            }
+        ).to_excel(writer, sheet_name="info", index=False)
     print(f"Saved analysis to {args.output}")
+
+    if args.visualize:
+        generate_pie_plots(area_data, yield_data, calibrations, internal_std, layout_df)
+        generate_heatmaps(yield_df)
 
 
 if __name__ == "__main__":

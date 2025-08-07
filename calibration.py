@@ -132,6 +132,7 @@ def handle_rows(
         "area_internal_standard": is_area,
         "ratio": ratio,
         "combined_ratio": combined_ratio,
+        "internal_standard_concentration": internal_std_conc,
     }, internal_std_name, internal_std_conc
 
 
@@ -181,6 +182,7 @@ def analyze(data: pd.DataFrame) -> None:
                 "intercept": [intercept],
                 "r_squared": [r_squared],
                 "ratio_to_noise": [mean_combined],
+                "internal_standard_concentration": [group["internal_standard_concentration"].iloc[0]],
             }).to_excel(writer, index=False, sheet_name="fit")
         print(f"Saved calibration data to {out_file}")
 
