@@ -76,38 +76,6 @@ def per_well_to_experiments(
     return result
 
 
-NAME_MAP: Dict[str, str] = {
-    "N_boc_pyrrole_2_boronic_acid_ester_mida": "N-Boc-Pyrrole-2-boronic acid MIDA ester (mg)",
-    "K2CO3": "Potassium Carbonate (mg)",
-    "KOAc": "Potassium Acetate (mg)",
-    "K3PO4": "Tripotassium Phosphate (mg)",
-    "Lutidine_in_MeOH_0_66M": "1,6-Lutidine in Methanol (uL)",
-    "Lutidine_in_THF_0_66M": "1,6-Lutidine in Tetrahydrofuran (uL)",
-    "Lutidine_in_MeCN_0_66M": "1,6-Lutidine in Acetonitrile (uL)",
-    "Lutidine_in_dioxane_0_66M": "1,6-Lutidine in 1,4-Dioxane (uL)",
-    "Lutidine_in_toluene_0_66M": "1,6-Lutidine in Toluene (uL)",
-    "Et3N_in_MeOH_0_66M": "Triethylamine in Methanol (uL)",
-    "Et3N_in_THF_0_66M": "Triethylamine in Tetrahydrofuran (uL)",
-    "Et3N_in_dioxane_0_66M": "Triethylamine in 1,4-Dioxane (uL)",
-    "Et3N_in_toluene_0_66M": "Triethylamine in Toluene (uL)",
-    "TBAH_in_MeOH_0_66M": "Tetrabutylammonium Hydroxide in Methanol (uL)",
-    "TBAH_in_THF_0_66M": "Tetrabutylammonium Hydroxide in Tetrahydrofuran (uL)",
-    "TBAH_in_MeCN_0_66M": "Tetrabutylammonium Hydroxide in Acetonitrile (uL)",
-    "TBAH_in_dioxane_0_66M": "Tetrabutylammonium Hydroxide in 1,4-Dioxane (uL)",
-    "TBAH_in_toluene_0_66M": "Tetrabutylammonium Hydroxide in Toluene (uL)",
-    "18C6_in_MeOH_0_033M": "18-Crown-6 in Methanol (uL)",
-    "18C6_in_THF_0_033M": "18-Crown-6 in Tetrahydrofuran (uL)",
-    "18C6_in_MeCN_0_033M": "18-Crown-6 in Acetonitrile (uL)",
-    "18C6_in_dioxane_0_033M": "18-Crown-6 in 1,4-Dioxane (uL)",
-    "18C6_in_toluene_0_033M": "18-Crown-6 in Toluene (uL)",
-    "MeOH_pure": "Methanol (uL)",
-    "THF_pure": "Tetrahydrofuran (uL)",
-    "MeCN_pure": "Acetonitrile (uL)",
-    "Dioxane_pure": "1,4-Dioxane (uL)",
-    "Toluene_pure": "Toluene (uL)",
-}
-
-
 def fill_workflow(calculator: str, workflow: str) -> None:
     """Fill an empty workflow file with amounts from the calculator export.
 
@@ -133,11 +101,19 @@ def fill_workflow(calculator: str, workflow: str) -> None:
         label = row.get("LABEL")
         if not isinstance(label, str):
             continue
-        calc_name = NAME_MAP.get(label)
+
+        calc_name = None
+        if label in per_exp.columns:
+            calc_name = label
+        else:
+            for col in per_exp.columns:
+                if isinstance(col, str) and col.startswith(label):
+                    calc_name = col
+                    break
+
         if not calc_name:
             continue
-        if calc_name not in per_exp.columns:
-            continue
+
         excel_row = idx + header_offset + 1
         for exp_label, col_idx in rev_map.items():
             val = per_exp.at[exp_label, calc_name]
