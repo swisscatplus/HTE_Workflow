@@ -160,7 +160,8 @@ def extract_workflow_steps(df: pd.DataFrame) -> List[str]:
     The Excel file may list multiple parameters for a single workflow node. We
     use column ``ID.1`` which contains the node identifier to group those rows
     together. For orbital shaker nodes, the heating/cooling value and rotation
-    speed are appended in parentheses.
+    speed are appended in parentheses.  For dispense nodes the compound name and
+    the amount dispensed (or range if it varies across wells) are appended.
     """
 
     steps: List[str] = []
@@ -173,7 +174,38 @@ def extract_workflow_steps(df: pd.DataFrame) -> List[str]:
             continue
         group = df[df['ID.1'] == node_id]
         name = str(group['WF NODE'].iloc[0])
-        if 'Orbital Shaker' in name:
+
+        product_rows = group[group['TYPE'] == 'Product'] if 'TYPE' in group.columns else pd.DataFrame()
+        if not product_rows.empty:
+            prod = product_rows.iloc[0]
+            compound = str(prod.get('LABEL', '')).strip()
+            unit = str(prod.get('UNIT', '')).strip()
+            # collect amounts per experiment similar to build_layout
+            exp_cols = [c for c in df.columns if isinstance(c, str) and c.startswith('Experiment')]
+            values: List[float] = []
+            for col in exp_cols:
+                val = prod.get(col)
+                if pd.isna(val):
+                    val = prod.get('DEFAULT')
+                if pd.isna(val):
+                    val = 0.0
+                values.append(float(val))
+            if values:
+                min_val = min(values)
+                max_val = max(values)
+                def fmt(v: float) -> str:
+                    return (
+                        f"{v:.2f}".rstrip('0').rstrip('.')
+                        if not float(v).is_integer()
+                        else str(int(v))
+                    )
+                qty = fmt(min_val) if math.isclose(min_val, max_val) else f"{fmt(min_val)}-{fmt(max_val)}"
+                unit_map = {'milligram': 'mg', 'microliter': 'µL'}
+                unit_short = unit_map.get(unit.lower(), unit)
+                if unit_short:
+                    qty += f" {unit_short}"
+                name += f": {compound} {qty}".rstrip()
+        elif 'Orbital Shaker' in name:
             heating = group.loc[group['PARAMETER'] == 'Heating/Cooling', 'DEFAULT']
             speed = group.loc[group['PARAMETER'] == 'Rotation Speed', 'DEFAULT']
             details: List[str] = []
@@ -183,6 +215,7 @@ def extract_workflow_steps(df: pd.DataFrame) -> List[str]:
                 details.append(f"{speed.iloc[0]} rpm")
             if details:
                 name += f" ({', '.join(details)})"
+
         steps.append(name)
         seen_ids.add(node_id)
 
