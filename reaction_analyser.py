@@ -102,7 +102,7 @@ def main() -> None:
     cols = list(yield_df.columns.levels[1])
 
     if choice.lower() == "compound group":
-        group_in = input("Enter compounds to include, separated by commas: ").split(",")
+        group_in = input("Enter compounds to include, separated by semicolon: ").split(";")
         selected = [g.strip() for g in group_in if g.strip() in compounds]
         if not selected:
             print("No valid compounds selected; aborting")
