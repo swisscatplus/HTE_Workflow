@@ -17,7 +17,7 @@ def _run_analysis(default_output: str, layout: str | None = None) -> tuple[str, 
         layout = input("Path to actual.xlsx for layout ordering (blank for none): ").strip()
     else:
         print(f"Using actual layout file: {layout}")
-    out = input(f"Output Excel file [{default_output}]: ").strip() or default_output
+    out = input(f"Output Excel file; default: {default_output}: ").strip() or default_output
     cmd = [
         sys.executable,
         os.path.join(os.path.dirname(__file__), "analysis.py"),
@@ -40,7 +40,7 @@ def _run_dispense(default_output: str, actual: str | None = None) -> str:
         actual = input("actual.xlsx file: ").strip()
     else:
         print(f"Using actual.xlsx file: {actual}")
-    out = input(f"Output Excel file [{default_output}]: ").strip() or default_output
+    out = input(f"Output Excel file; default: {default_output}: ").strip() or default_output
     cmd = [
         sys.executable,
         os.path.join(os.path.dirname(__file__), "dispense_analyser.py"),
