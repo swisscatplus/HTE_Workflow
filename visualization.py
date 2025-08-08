@@ -128,7 +128,7 @@ def generate_pie_plots(
     print("Saved pie plots to 'pie_plots.png' and 'pie_plots_others.png'")
 
 
-def generate_heatmaps(yield_df: pd.DataFrame) -> None:
+def generate_heatmaps(yield_df: pd.DataFrame, prefix: str = "heatmap") -> None:
     if not isinstance(yield_df.columns, pd.MultiIndex):
         return
     for comp in yield_df.columns.levels[0]:
@@ -142,6 +142,7 @@ def generate_heatmaps(yield_df: pd.DataFrame) -> None:
         plt.xlabel("Column")
         plt.ylabel("Row")
         plt.tight_layout()
-        plt.savefig(f"heatmap_{comp}.png")
+        fname = f"{prefix}_{comp}.png"
+        plt.savefig(fname)
         plt.close()
-        print("Saved heatmap for", comp, "to 'heatmap_{}.png'".format(comp))
+        print(f"Saved heatmap for {comp} to '{fname}'")
