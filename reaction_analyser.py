@@ -10,10 +10,13 @@ import pandas as pd
 from visualization import generate_heatmaps
 
 
-def _run_analysis(default_output: str) -> str:
+def _run_analysis(default_output: str, layout: str | None = None) -> tuple[str, str | None]:
     """Run analysis.py with calibration and visualization."""
     folder = input("Folder with analysis CSV files: ").strip()
-    layout = input("Path to actual.xlsx for layout ordering (blank for none): ").strip()
+    if layout is None:
+        layout = input("Path to actual.xlsx for layout ordering (blank for none): ").strip()
+    else:
+        print(f"Using actual layout file: {layout}")
     out = input(f"Output Excel file [{default_output}]: ").strip() or default_output
     cmd = [
         sys.executable,
@@ -27,13 +30,16 @@ def _run_analysis(default_output: str) -> str:
     if layout:
         cmd.extend(["--layout", layout])
     subprocess.run(cmd, check=True)
-    return out
+    return out, layout or None
 
 
-def _run_dispense(default_output: str) -> str:
+def _run_dispense(default_output: str, actual: str | None = None) -> str:
     """Run dispense_analyser.py to create dispense analysis."""
     runstats = input("RunStatistics Excel file: ").strip()
-    actual = input("actual.xlsx file: ").strip()
+    if actual is None:
+        actual = input("actual.xlsx file: ").strip()
+    else:
+        print(f"Using actual.xlsx file: {actual}")
     out = input(f"Output Excel file [{default_output}]: ").strip() or default_output
     cmd = [
         sys.executable,
@@ -70,15 +76,18 @@ def main() -> None:
     args = parser.parse_args()
 
     analysis_path = args.analysis
+    actual_path: str | None = None
     if not analysis_path or not os.path.exists(analysis_path):
         print("Analysis Excel not provided or missing; running analysis.py")
-        analysis_path = _run_analysis("analysis_output.xlsx")
+        analysis_path, actual_path = _run_analysis("analysis_output.xlsx")
     yield_df = _load_yield(analysis_path)
 
     dispense_path = args.dispense
     if not dispense_path or not os.path.exists(dispense_path):
         print("Dispense Excel not provided or missing; running dispense_analyser.py")
-        dispense_path = _run_dispense("dispense_analysis.xlsx")
+        if actual_path is None:
+            actual_path = input("actual.xlsx file: ").strip()
+        dispense_path = _run_dispense("dispense_analysis.xlsx", actual_path)
     actual_df, rel_df = _load_dispense(dispense_path)
 
     compounds = list(actual_df.columns.levels[0])
@@ -144,7 +153,7 @@ def main() -> None:
         norm_df.to_excel(writer, sheet_name=sheet_name)
     print(f"Saved normalized yields to sheet '{sheet_name}' in {analysis_path}")
 
-    generate_heatmaps(norm_df)
+    generate_heatmaps(norm_df, prefix=f"heatmap_normalized_{norm_label}")
 
 
 if __name__ == "__main__":
