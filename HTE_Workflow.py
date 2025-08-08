@@ -3,13 +3,15 @@ import sys
 import shutil
 import datetime
 import subprocess
+import re
+
+from importlib import import_module
 from typing import Optional, Tuple
 
 import pandas as pd
 
 import hte_calculator
-import reaction_analyser as ra
-
+import reaction_analyser
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -38,13 +40,37 @@ def run_hte_calculator(prefix: str, preload: Optional[str]) -> str:
 
     import builtins
 
+    AUTO_ANSWERS: list[tuple[re.Pattern, callable]] = [
+        # Example: “Reaction name …”
+        (re.compile(r"^Reaction name", re.I), lambda: prefix),
+
+        # This will answer "y" if preload is provided, otherwise "n"
+        (re.compile(r"^Use preloaded compounds\?\s*\[y/n\]", re.I), lambda: "y" if preload else "n"),
+
+        # Example: limiting reagent prompt
+
+
+        # Add more patterns here as needed...
+    ]
+
+    if preload:
+        AUTO_ANSWERS.extend([
+
+            # No need to add more as autofilled correctly
+            (re.compile(r"^Reagent name", re.I), lambda: ""),
+            (re.compile(r"^Add more reagents/solvents", re.I), lambda: "N"),
+        ])
+
     builtin_input = builtins.input
 
     def patched_input(prompt: str = "") -> str:
-        if prompt.startswith("Reaction name"):
-            # Automatically supply our prefix for the reaction name
-            print(f"{prompt}{prefix}")
-            return prefix
+        for pattern, answer_fn in AUTO_ANSWERS:
+            if pattern.search(prompt or ""):
+                ans = str(answer_fn())
+                # Echo what we’re “typing” so logs remain readable:
+                print(f"{prompt}{ans}")
+                return ans
+        # Fallback: ask the user normally
         return builtin_input(prompt)
 
     builtins.input = patched_input
@@ -82,6 +108,7 @@ def run_workflow_checker(prefix: str, calculator_file: str) -> str:
     _rename("layout.png", f"{prefix}_workflow_layout.png")
     _rename("experiment_map.png", f"{prefix}_experiment_map.png")
     _rename("workflow.png", f"{prefix}_workflow_diagram.png")
+    _rename("parsed_layout.xlsx", f"{prefix}_parsed_workflow_layout.xlsx")
     return workflow_file
 
 
@@ -109,36 +136,52 @@ def _rename_dispense_images(prefix: str, actual_df: pd.DataFrame, rel_df: pd.Dat
         )
 
 
-def run_reaction_analysis(prefix: str, limiting: str) -> Tuple[str, pd.DataFrame]:
+def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str) -> str:
     """Run the full reaction analysis workflow.
 
     Returns the path to the analysis Excel file and the normalised yield DataFrame.
     """
-    analysis_path, layout_path = ra._run_analysis(f"{prefix}_analysis.xlsx")
-    yield_df = ra._load_yield(analysis_path)
-    _rename_analysis_images(prefix, yield_df)
+    analysis_output_file = f"{prefix}_analysis.xlsx"
+    dispense_output_file = f"{prefix}_dispense.xlsx"
 
-    dispense_path = ra._run_dispense(f"{prefix}_dispense.xlsx", layout_path)
-    actual_df, rel_df = ra._load_dispense(dispense_path)
-    _rename_dispense_images(prefix, actual_df, rel_df)
+    original_argv = sys.argv
+    sys.argv = ["reaction_analyser.py"]
 
-    factors = 1 + rel_df[limiting]
-    for r in factors.index:
-        for c in factors.columns:
-            if actual_df[limiting].loc[r, c] == 0:
-                factors.loc[r, c] = float("nan")
+    import builtins
 
-    norm_dfs = {comp: yield_df[comp] / factors for comp in yield_df.columns.levels[0]}
-    norm_df = pd.concat(norm_dfs, axis=1)
+    AUTO_ANSWERS: list[tuple[re.Pattern, callable]] = [
+        # Example: “Reaction name …”
+        (re.compile(r"^Output Excel file; default: analysis_output.xlsx", re.I), lambda: analysis_output_file),
+        (re.compile(r"^Output Excel file; default: dispense_analysis.xlsx", re.I), lambda: dispense_output_file),
 
-    sheet_name = f"normalized_{limiting}"[:31]
-    with pd.ExcelWriter(analysis_path, mode="a", if_sheet_exists="replace") as writer:
-        norm_df.to_excel(writer, sheet_name=sheet_name)
-    print(f"Saved normalized yields to sheet '{sheet_name}' in {analysis_path}")
+        (re.compile(r"^Analysis start time in min", re.I), lambda: ""),
+        # Default to empty string for analysis start time; could be changed to different defaults if needed
 
-    ra.generate_heatmaps(norm_df, prefix=f"{prefix}_heatmap_normalized_{limiting}")
-    return analysis_path, norm_df
+        (re.compile(r"^Path to actual.xlsx for layout ordering", re.I), lambda: calculator_file),
 
+        (re.compile(r"^Normalize against which compound?", re.I), lambda: limiting),
+    ]
+
+    builtin_input = builtins.input
+
+    def patched_input(prompt: str = "") -> str:
+        for pattern, answer_fn in AUTO_ANSWERS:
+            if pattern.search(prompt or ""):
+                ans = str(answer_fn())
+                # Echo what we’re “typing” so logs remain readable:
+                print(f"{prompt}{ans}")
+                return ans
+        # Fallback: ask the user normally
+        return builtin_input(prompt)
+
+    builtins.input = patched_input
+    try:
+        reaction_analyser.main()
+    finally:
+        builtins.input = builtin_input
+        sys.argv = original_argv
+
+    return analysis_output_file
 
 # ---------------------------------------------------------------------------
 # Main orchestration
@@ -147,21 +190,26 @@ def run_reaction_analysis(prefix: str, limiting: str) -> Tuple[str, pd.DataFrame
 def main() -> None:
     exp_name = input("Experiment name: ").strip()
     exp_number = input("Experiment number: ").strip()
-    limiting = input("Limiting reagent name: ").strip()
+    limiting = input("Limiting reagent name: ").strip()  # Needs to be parsed directly from calculator
     date_str = datetime.date.today().strftime("%Y%m%d")
     prefix = f"{date_str}_{exp_name}_{exp_number}"
 
     preload = input("Preloaded reagents file (blank if none): ").strip() or None
 
     calculator_file = run_hte_calculator(prefix, preload)
+
+    print(f"Reagents calculated and saved to {calculator_file}.")
+    input("Prepare the digital twin and download the workflow template. Press Enter to continue...")
+
     workflow_file = run_workflow_checker(prefix, calculator_file)
 
-    input("Run the reaction according to the workflow now. Press Enter to continue once finished...")
+    print("Check if the experiment setup is correct.")
+    print("Upload the workflow file to Arcsuite and run the reaction.")
+    input("Perform the reaction analysis (HPLC) and the calibration. Press Enter to continue to the analysis once finished...")
 
-    analysis_path, yields = run_reaction_analysis(prefix, limiting)
+    analysis_path = run_reaction_analysis(prefix, limiting, calculator_file)
 
-    print("\nFinal normalized yields:")
-    print(yields)
+
 
     # Placeholder for forwarding results to external systems
     # e.g., send ``yields`` to a Bayesian optimizer in future iterations
