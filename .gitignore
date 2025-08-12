@@ -9,3 +9,5 @@ __pycache__/
 *.png
 reagent_list.py
 env/
+output/
+data/
