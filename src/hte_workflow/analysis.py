@@ -7,7 +7,7 @@ import warnings
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-from visualization import generate_pie_plots, generate_heatmaps
+from hte_workflow.visualization import generate_pie_plots, generate_heatmaps
 
 
 def load_calibration_data(folder: str) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
@@ -187,7 +187,8 @@ def main() -> None:
         subprocess.run(
             [
                 sys.executable,
-                os.path.join(os.path.dirname(__file__), "calibration.py"),
+                "-m",
+                "hte_workflow.calibration",
                 args.folder,
             ],
             check=True,

@@ -7,7 +7,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
-from visualization import generate_heatmaps
+from hte_workflow.visualization import generate_heatmaps
 
 
 def _run_analysis(default_output: str, layout: str | None = None) -> tuple[str, str | None]:
@@ -20,7 +20,8 @@ def _run_analysis(default_output: str, layout: str | None = None) -> tuple[str, 
     out = input(f"Output Excel file; default: {default_output}: ").strip() or default_output
     cmd = [
         sys.executable,
-        os.path.join(os.path.dirname(__file__), "analysis.py"),
+        "-m",
+        "hte_workflow.analysis",
         folder,
         "--calibration",
         "--visualize",
@@ -43,7 +44,8 @@ def _run_dispense(default_output: str, actual: str | None = None) -> str:
     out = input(f"Output Excel file; default: {default_output}: ").strip() or default_output
     cmd = [
         sys.executable,
-        os.path.join(os.path.dirname(__file__), "dispense_analyser.py"),
+        "-m",
+        "hte_workflow.dispense_analyser",
         runstats,
         actual,
         "--output",

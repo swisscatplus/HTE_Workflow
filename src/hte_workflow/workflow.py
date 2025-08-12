@@ -10,8 +10,8 @@ from typing import Optional, Tuple
 
 import pandas as pd
 
-import hte_calculator
-import reaction_analyser
+from hte_workflow import hte_calculator, reaction_analyser
+
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -34,7 +34,9 @@ def run_hte_calculator(prefix: str, preload: Optional[str]) -> str:
     output_file = f"{prefix}_calculator.xlsx"
 
     original_argv = sys.argv
-    sys.argv = ["hte_calculator.py", "--output", output_file]
+    sys.argv = ["-m",
+                "hte_workflow.hte_calculator",
+                "--output", output_file]
     if preload:
         sys.argv.extend(["--preload", preload])
 
@@ -96,7 +98,8 @@ def run_workflow_checker(prefix: str, calculator_file: str) -> str:
     subprocess.run(
         [
             sys.executable,
-            os.path.join(os.path.dirname(__file__), "workflow_checker.py"),
+            "-m",
+            "hte_workflow.workflow_checker",
             calculator_file,
             workflow_file,
             "--visualize",
@@ -145,7 +148,8 @@ def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str) -> s
     dispense_output_file = f"{prefix}_dispense.xlsx"
 
     original_argv = sys.argv
-    sys.argv = ["reaction_analyser.py"]
+    sys.argv = ["-m",
+                "hte_workflow.analysis",]
 
     import builtins
 

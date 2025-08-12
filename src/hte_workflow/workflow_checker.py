@@ -4,7 +4,7 @@ from typing import Dict, List, Tuple
 import openpyxl
 import pandas as pd
 
-import layout_parser as lp
+from hte_workflow import layout_parser as lp
 
 
 def parse_calculator_excel(path: str) -> Tuple[List[str], List[str], List[str]]:
