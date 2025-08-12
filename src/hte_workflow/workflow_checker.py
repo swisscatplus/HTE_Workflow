@@ -1,10 +1,13 @@
 import argparse
 from typing import Dict, List, Tuple
+from pathlib import Path
 
 import openpyxl
 import pandas as pd
+from matplotlib.sphinxext.plot_directive import out_of_date
 
 from hte_workflow import layout_parser as lp
+from hte_workflow.paths import DATA_DIR, OUT_DIR
 
 
 def parse_calculator_excel(path: str) -> Tuple[List[str], List[str], List[str]]:
@@ -132,10 +135,22 @@ def main() -> None:
         action="store_true",
         help="Write dispense amounts directly into the workflow file",
     )
+    parser.add_argument("--data-dir",
+                        default=str(DATA_DIR),
+                        help="Directory with data files for layout_parser")
+    parser.add_argument("--out-dir",
+                        default=str(OUT_DIR),
+                        help="Directory for output files from layout_parser")
     args = parser.parse_args()
 
-    calc_solids, calc_liquids, calc_solvents = parse_calculator_excel(args.calculator)
-    wf_solids, wf_liquids, steps = workflow_dispense_counts(args.workflow)
+    data_dir = Path(args.data_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
+
+    calculator_excel_path = out_dir / args.calculator
+    workflow_excel_path = data_dir / args.workflow
+
+    calc_solids, calc_liquids, calc_solvents = parse_calculator_excel(calculator_excel_path)
+    wf_solids, wf_liquids, steps = workflow_dispense_counts(workflow_excel_path)
 
     print(f"Calculator reagents: {len(calc_solids)} solids, {len(calc_liquids)} liquids, {len(calc_solvents)} solvents")
     print(f"Workflow before first orbital shaker has {wf_solids} solid dispenses and {wf_liquids} liquid dispenses")
@@ -145,7 +160,7 @@ def main() -> None:
         print("Warning: mismatch in number of liquid/solvent dispenses")
 
     if args.fill:
-        fill_workflow(args.calculator, args.workflow)
+        fill_workflow(calculator_excel_path, workflow_excel_path)
         print(f"Workflow {args.workflow} updated")
 
     if args.visualize:
@@ -154,7 +169,11 @@ def main() -> None:
         import sys
 
         original = sys.argv
-        sys.argv = ["layout_parser.py", args.workflow]
+        sys.argv = ["-m",
+                    "hte_workflow.layout_parser",
+                    "--data-dir", str(data_dir),
+                    "--out-dir", str(out_dir),
+                    args.workflow]
         try:
             lp.main()
         finally:

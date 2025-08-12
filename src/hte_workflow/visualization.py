@@ -4,6 +4,7 @@ from typing import Dict, Optional
 import matplotlib.cm as cm
 import numpy as np
 from matplotlib.colors import Normalize
+from pathlib import Path
 
 
 def _ordered_experiments(area_data: Dict[str, Dict[int, float]], layout: Optional[pd.DataFrame]) -> list:
@@ -25,6 +26,7 @@ def generate_pie_plots(
     calibrations: Dict[str, Dict[str, float]],
     internal_std: Optional[str],
     layout: Optional[pd.DataFrame],
+    out_dir = Path,
 ) -> None:
     calibrated = list(calibrations.keys())
     if layout is not None:
@@ -119,16 +121,16 @@ def generate_pie_plots(
     cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     fig.colorbar(sm, cax=cbar_ax, label="Yield (%)")
     fig.tight_layout(rect=[0, 0, 0.9, 1])
-    fig.savefig("pie_plots.png")
+    fig.savefig(str(out_dir/"pie_plots.png"))
     plt.close(fig)
 
     fig_other.tight_layout()
-    fig_other.savefig("pie_plots_others.png")
+    fig_other.savefig(str(out_dir/"pie_plots_others.png"))
     plt.close(fig_other)
     print("Saved pie plots to 'pie_plots.png' and 'pie_plots_others.png'")
 
 
-def generate_heatmaps(yield_df: pd.DataFrame, prefix: str = "heatmap") -> None:
+def generate_heatmaps(yield_df: pd.DataFrame, out_dir: Path, prefix: str = "heatmap") -> None:
     if not isinstance(yield_df.columns, pd.MultiIndex):
         return
     for comp in yield_df.columns.levels[0]:
@@ -143,6 +145,6 @@ def generate_heatmaps(yield_df: pd.DataFrame, prefix: str = "heatmap") -> None:
         plt.ylabel("Row")
         plt.tight_layout()
         fname = f"{prefix}_{comp}.png"
-        plt.savefig(fname)
+        plt.savefig(str(out_dir/fname))
         plt.close()
         print(f"Saved heatmap for {comp} to '{fname}'")

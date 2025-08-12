@@ -8,6 +8,8 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from hte_workflow.visualization import generate_pie_plots, generate_heatmaps
+from pathlib import Path
+from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
 
 
 def load_calibration_data(folder: str) -> Tuple[Dict[str, Dict[str, float]], List[str]]:
@@ -181,7 +183,12 @@ def main() -> None:
         action="store_true",
         help="Generate pie charts and heatmaps",
     )
+    parser.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files")
+    parser.add_argument("--out-dir", default=str(OUT_DIR), help="Directory for output files")
     args = parser.parse_args()
+
+    data_dir = Path(args.data_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
 
     if args.calibration:
         subprocess.run(
@@ -190,15 +197,17 @@ def main() -> None:
                 "-m",
                 "hte_workflow.calibration",
                 args.folder,
+                "--data-dir", str(data_dir),
+                "--out-dir", str(out_dir),
             ],
             check=True,
         )
 
-    calibrations, signal_names = load_calibration_data(args.folder)
+    calibrations, signal_names = load_calibration_data(str(data_dir/args.folder))
     if not signal_names:
         print("No calibrations selected; aborting")
         return
-    files = find_analysis_files(args.folder)
+    files = find_analysis_files(str(data_dir/args.folder))
     if not files:
         print("No analysis files found")
         return
@@ -227,7 +236,7 @@ def main() -> None:
     layout_df: Optional[pd.DataFrame] = None
     if layout_path:
         try:
-            layout_df = load_actual_layout(layout_path)
+            layout_df = load_actual_layout(str(out_dir/layout_path))
         except Exception as exc:
             print(f"Could not parse layout: {exc}; using experiment number order")
             layout_df = None
@@ -260,7 +269,7 @@ def main() -> None:
 
     yield_df = build_matrix(yield_data, layout_df)
 
-    with pd.ExcelWriter(args.output) as writer:
+    with pd.ExcelWriter(str(out_dir/args.output)) as writer:
         area_df.to_excel(writer, sheet_name="area")
         total_df.to_excel(writer, sheet_name="area_fraction")
         is_df.to_excel(writer, sheet_name="area_internal")
@@ -274,8 +283,8 @@ def main() -> None:
     print(f"Saved analysis to {args.output}")
 
     if args.visualize:
-        generate_pie_plots(area_data, yield_data, calibrations, internal_std, layout_df)
-        generate_heatmaps(yield_df)
+        generate_pie_plots(area_data, yield_data, calibrations, internal_std, layout_df, out_dir)
+        generate_heatmaps(yield_df, out_dir)
 
 
 if __name__ == "__main__":

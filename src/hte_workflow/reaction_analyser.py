@@ -8,9 +8,11 @@ import numpy as np
 import pandas as pd
 
 from hte_workflow.visualization import generate_heatmaps
+from pathlib import Path
+from hte_workflow.paths import DATA_DIR, OUT_DIR
 
 
-def _run_analysis(default_output: str, layout: str | None = None) -> tuple[str, str | None]:
+def _run_analysis(default_output: str, data_dir: Path, out_dir: Path, layout: str | None = None) -> tuple[str, str | None]:
     """Run analysis.py with calibration and visualization."""
     folder = input("Folder with analysis CSV files: ").strip()
     if layout is None:
@@ -27,6 +29,8 @@ def _run_analysis(default_output: str, layout: str | None = None) -> tuple[str, 
         "--visualize",
         "--output",
         out,
+        "--data-dir", str(data_dir),
+        "--out-dir", str(out_dir),
     ]
     if layout:
         cmd.extend(["--layout", layout])
@@ -34,7 +38,8 @@ def _run_analysis(default_output: str, layout: str | None = None) -> tuple[str, 
     return out, layout or None
 
 
-def _run_dispense(default_output: str, actual: str | None = None) -> str:
+def _run_dispense(default_output: str, data_dir: Path, out_dir: Path,
+                  actual: str | None = None) -> str:
     """Run dispense_analyser.py to create dispense analysis."""
     runstats = input("RunStatistics Excel file: ").strip()
     if actual is None:
@@ -50,6 +55,8 @@ def _run_dispense(default_output: str, actual: str | None = None) -> str:
         actual,
         "--output",
         out,
+        "--data-dir", str(data_dir),
+        "--out-dir", str(out_dir),
     ]
     subprocess.run(cmd, check=True)
     return out
@@ -75,22 +82,29 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Normalize yields with dispense data")
     parser.add_argument("--analysis", help="analysis output Excel file")
     parser.add_argument("--dispense", help="dispense analysis Excel file")
+    parser.add_argument("--data-dir", default = str(DATA_DIR), help="Directory with data files")
+    parser.add_argument("--out-dir", default = str(OUT_DIR), help="Directory for output files")
     args = parser.parse_args()
 
-    analysis_path = args.analysis
+    data_dir = Path(args.data_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
+
+    analysis_path = data_dir / args.analysis
     actual_path: str | None = None
     if not analysis_path or not os.path.exists(analysis_path):
         print("Analysis Excel not provided or missing; running analysis.py")
-        analysis_path, actual_path = _run_analysis("analysis_output.xlsx")
+        analysis_path, actual_path = _run_analysis("analysis_output.xlsx",
+                                                   data_dir = data_dir, out_dir = out_dir)
+        analysis_path = out_dir / analysis_path
     yield_df = _load_yield(analysis_path)
 
     dispense_path = args.dispense
-    if not dispense_path or not os.path.exists(dispense_path):
+    if not dispense_path or not os.path.exists(str(out_dir/dispense_path)):
         print("Dispense Excel not provided or missing; running dispense_analyser.py")
         if actual_path is None:
             actual_path = input("actual.xlsx file: ").strip()
-        dispense_path = _run_dispense("dispense_analysis.xlsx", actual_path)
-    actual_df, rel_df = _load_dispense(dispense_path)
+        dispense_path = _run_dispense("dispense_analysis.xlsx", data_dir, out_dir, actual_path)
+    actual_df, rel_df = _load_dispense(str(out_dir/dispense_path))
 
     compounds = list(actual_df.columns.levels[0])
     print("Available compounds:")
@@ -155,7 +169,7 @@ def main() -> None:
         norm_df.to_excel(writer, sheet_name=sheet_name)
     print(f"Saved normalized yields to sheet '{sheet_name}' in {analysis_path}")
 
-    generate_heatmaps(norm_df, prefix=f"heatmap_normalized_{norm_label}")
+    generate_heatmaps(norm_df, out_dir, prefix=f"heatmap_normalized_{norm_label}")
 
 
 if __name__ == "__main__":
