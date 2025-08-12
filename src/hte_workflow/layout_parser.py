@@ -270,7 +270,7 @@ def main() -> None:
     parser.add_argument('--map', default='experiment_map.png', help='Output image showing experiment numbers')
     parser.add_argument('--workflow', default='workflow.png', help='Output workflow diagram')
     parser.add_argument("--data-dir", default=str(DATA_DIR))
-    parser.add_argument("--output-dir", default=str(OUT_DIR))
+    parser.add_argument("--out-dir", default=str(OUT_DIR))
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).resolve()

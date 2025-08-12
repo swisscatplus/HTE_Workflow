@@ -232,7 +232,7 @@ def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], pla
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="HTE Dispense Calculator")
-    parser.add_argument("--output-dir", default=str(OUT_DIR))
+    parser.add_argument("--out-dir", default=str(OUT_DIR))
     parser.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files for layout_parser")
     parser.add_argument("--output", default=None, help="Excel output file")
     parser.add_argument("--preload", default=None, help="Path to python file with PRELOADED_REAGENTS list")
