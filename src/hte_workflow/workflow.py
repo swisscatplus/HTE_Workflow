@@ -10,8 +10,12 @@ from typing import Optional, Tuple
 
 import pandas as pd
 
-import hte_calculator
-import reaction_analyser
+from pathlib import Path
+from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
+import argparse
+
+from hte_workflow import hte_calculator, reaction_analyser, workflow_checker
+
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -29,12 +33,16 @@ def _rename(src: str, dst: str) -> Optional[str]:
 # Step 1: HTE calculator
 # ---------------------------------------------------------------------------
 
-def run_hte_calculator(prefix: str, preload: Optional[str]) -> str:
+def run_hte_calculator(prefix: str, preload: Optional[str], data_dir: Path, out_dir: Path) -> str:
     """Run ``hte_calculator`` and return the path to the generated Excel file."""
     output_file = f"{prefix}_calculator.xlsx"
 
     original_argv = sys.argv
-    sys.argv = ["hte_calculator.py", "--output", output_file]
+    sys.argv = [
+                "hte_calculator",
+                "--output", output_file,
+                "--data-dir", str(data_dir),
+                "--out-dir", str(out_dir),]
     if preload:
         sys.argv.extend(["--preload", preload])
 
@@ -87,28 +95,31 @@ def run_hte_calculator(prefix: str, preload: Optional[str]) -> str:
 # Step 2: Workflow checker
 # ---------------------------------------------------------------------------
 
-def run_workflow_checker(prefix: str, calculator_file: str) -> str:
+def run_workflow_checker(prefix: str, calculator_file: str, data_dir: Path, out_dir: Path) -> str:
     """Fill and visualise the workflow based on the calculator output."""
     template = input("Workflow Excel template file: ").strip()
     workflow_file = f"{prefix}_workflow.xlsx"
-    shutil.copyfile(template, workflow_file)
+    shutil.copyfile(str(data_dir / template), str(data_dir / workflow_file))
 
     subprocess.run(
         [
             sys.executable,
-            os.path.join(os.path.dirname(__file__), "workflow_checker.py"),
+            "-m",
+            "hte_workflow.workflow_checker",
             calculator_file,
             workflow_file,
             "--visualize",
             "--fill",
+            "--data-dir", str(data_dir),
+            "--out-dir", str(out_dir),
         ],
         check=True,
     )
 
-    _rename("layout.png", f"{prefix}_workflow_layout.png")
-    _rename("experiment_map.png", f"{prefix}_experiment_map.png")
-    _rename("workflow.png", f"{prefix}_workflow_diagram.png")
-    _rename("parsed_layout.xlsx", f"{prefix}_parsed_workflow_layout.xlsx")
+    _rename(str(out_dir/ "layout.png"), str(out_dir/f"{prefix}_workflow_layout.png"))
+    _rename(str(out_dir/"experiment_map.png"), str(out_dir/f"{prefix}_experiment_map.png"))
+    _rename(str(out_dir/"workflow.png"), str(out_dir/f"{prefix}_workflow_diagram.png"))
+    _rename(str(out_dir/"parsed_layout.xlsx"), str(out_dir/f"{prefix}_parsed_workflow_layout.xlsx"))
     return workflow_file
 
 
@@ -136,7 +147,8 @@ def _rename_dispense_images(prefix: str, actual_df: pd.DataFrame, rel_df: pd.Dat
         )
 
 
-def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str) -> str:
+def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str,
+                          data_dir: Path, out_dir: Path) -> str:
     """Run the full reaction analysis workflow.
 
     Returns the path to the analysis Excel file and the normalised yield DataFrame.
@@ -145,7 +157,10 @@ def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str) -> s
     dispense_output_file = f"{prefix}_dispense.xlsx"
 
     original_argv = sys.argv
-    sys.argv = ["reaction_analyser.py"]
+    sys.argv = [
+                "reaction_analyser",
+                "--data-dir", str(data_dir),
+                "--out-dir", str(out_dir),]
 
     import builtins
 
@@ -188,6 +203,22 @@ def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str) -> s
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="HTE workflow orchestration script")
+    parser.add_argument(
+        "--data-dir",
+        default=str(DATA_DIR),
+        help="Directory for data files (default: DATA_DIR)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        default=str(OUT_DIR),
+        help="Directory for output files (default: OUT_DIR)",
+    )
+    args = parser.parse_args()
+
+    data_dir = Path(args.data_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
+
     exp_name = input("Experiment name: ").strip()
     exp_number = input("Experiment number: ").strip()
     limiting = input("Limiting reagent name: ").strip()  # Needs to be parsed directly from calculator
@@ -196,12 +227,12 @@ def main() -> None:
 
     preload = input("Preloaded reagents file (blank if none): ").strip() or None
 
-    calculator_file = run_hte_calculator(prefix, preload)
+    calculator_file = run_hte_calculator(prefix, preload, data_dir, out_dir)
 
     print(f"Reagents calculated and saved to {calculator_file}.")
     input("Prepare the digital twin and download the workflow template. Press Enter to continue...")
 
-    workflow_file = run_workflow_checker(prefix, calculator_file)
+    workflow_file = run_workflow_checker(prefix, calculator_file, data_dir, out_dir)
 
     print("Check if the experiment setup is correct.")
     print("Upload the workflow file to Arcsuite and run the reaction.")

@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: hte-workflow
+Version: 0.0.0
+Requires-Dist: pandas
+Requires-Dist: numpy
+Requires-Dist: openpyxl
+Requires-Dist: matplotlib

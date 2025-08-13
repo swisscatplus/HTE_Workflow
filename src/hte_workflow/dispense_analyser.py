@@ -7,6 +7,8 @@ import difflib
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
+from hte_workflow.paths import DATA_DIR, OUT_DIR
 
 
 def load_layout(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -104,7 +106,7 @@ def build_matrix(data: Dict[str, Dict[int, float]], layout: pd.DataFrame) -> pd.
     return pd.concat(per_comp, axis=1)
 
 
-def generate_heatmaps(per_reagent: Dict[str, pd.DataFrame], prefix: str, center_zero: bool = False) -> None:
+def generate_heatmaps(per_reagent: Dict[str, pd.DataFrame], prefix: str, out_dir: Path, center_zero: bool = False) -> None:
     if not per_reagent:
         return
     n = len(per_reagent)
@@ -132,7 +134,7 @@ def generate_heatmaps(per_reagent: Dict[str, pd.DataFrame], prefix: str, center_
         ax.axis("off")
     plt.tight_layout()
     out_path = f"{prefix}.png"
-    plt.savefig(out_path)
+    plt.savefig(str(out_dir / out_path))
     plt.close(fig)
     print(f"Saved {out_path}")
 
@@ -142,11 +144,16 @@ def main() -> None:
     parser.add_argument("runstatistics", help="RunStatistics excel file")
     parser.add_argument("actual", help="actual excel file")
     parser.add_argument("--output", default="dispense_analysis.xlsx", help="Output Excel file")
+    parser.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files")
+    parser.add_argument("--out-dir", default=str(OUT_DIR), help="Directory for output files")
     args = parser.parse_args()
 
-    layout, per = load_layout(args.actual)
+    data_dir = Path(args.data_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
+
+    layout, per = load_layout(str(out_dir/args.actual))
     intended_map, reagents = parse_actual_dispenses(per, layout)
-    run_map = parse_runstatistics(args.runstatistics, reagents)
+    run_map = parse_runstatistics(str(data_dir/args.runstatistics), reagents)
 
     intended_df = build_matrix(intended_map, layout).fillna(0)
     run_df = build_matrix(run_map, layout)
@@ -154,15 +161,15 @@ def main() -> None:
     relative = (run_df - intended_df) / intended_df.replace(0, np.nan)
     relative = relative.fillna(0)
 
-    with pd.ExcelWriter(args.output) as writer:
+    with pd.ExcelWriter(str(out_dir/args.output)) as writer:
         run_df.to_excel(writer, sheet_name="actual_dispenses")
         relative.to_excel(writer, sheet_name="relative_difference")
     print(f"Saved analysis to {args.output}")
 
     run_dict = {comp: run_df[comp] for comp in run_df.columns.levels[0]}
     rel_dict = {comp: relative[comp] for comp in relative.columns.levels[0]}
-    generate_heatmaps(run_dict, "actual_dispenses_heatmap")
-    generate_heatmaps(rel_dict, "relative_difference_heatmap", center_zero=True)
+    generate_heatmaps(run_dict, "actual_dispenses_heatmap", out_dir)
+    generate_heatmaps(rel_dict, "relative_difference_heatmap", out_dir, center_zero=True)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,9 @@ from typing import Dict, Tuple, List, Mapping
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from pathlib import Path
+from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
+
 
 EXPERIMENT_COL_START = 17  # column index in Excel where experiment columns begin
 
@@ -266,22 +269,33 @@ def main() -> None:
     parser.add_argument('--image', default='layout.png', help='Output image for reagent distribution')
     parser.add_argument('--map', default='experiment_map.png', help='Output image showing experiment numbers')
     parser.add_argument('--workflow', default='workflow.png', help='Output workflow diagram')
+    parser.add_argument("--data-dir", default=str(DATA_DIR))
+    parser.add_argument("--out-dir", default=str(OUT_DIR))
     args = parser.parse_args()
 
-    df, mapping = read_experiment_definition(args.excel)
+    data_dir = Path(args.data_dir).resolve()
+    out_dir = Path(args.output_dir).resolve()
+
+    excel_path = data_dir / args.excel
+    output_excel = out_dir / args.output
+    output_image = out_dir / args.image
+    output_map = out_dir / args.map
+    output_workflow = out_dir / args.workflow
+
+    df, mapping = read_experiment_definition(excel_path)
     layout_df, totals, final_vol, plate_layout, per_reagent, (solids, liquids) = build_layout(df, mapping)
     steps = extract_workflow_steps(df)
 
-    with pd.ExcelWriter(args.output) as writer:
+    with pd.ExcelWriter(output_excel) as writer:
         layout_df.to_excel(writer, sheet_name='per_well')
         totals.to_frame().to_excel(writer, sheet_name='totals')
         final_vol.to_excel(writer, sheet_name='final_volume')
         plate_layout.to_excel(writer, sheet_name='experiment_map')
     print(f'Wrote layout to {args.output}')
 
-    visualize_reagents(per_reagent, final_vol, args.image)
-    plot_experiment_map(plate_layout, args.map)
-    plot_workflow(steps, args.workflow)
+    visualize_reagents(per_reagent, final_vol, output_image)
+    plot_experiment_map(plate_layout, output_map)
+    plot_workflow(steps, output_workflow)
     print(f'Images saved to {args.image}, {args.map} and {args.workflow}')
 
 

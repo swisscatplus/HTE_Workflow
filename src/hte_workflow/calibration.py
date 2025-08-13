@@ -6,6 +6,8 @@ from typing import List, Tuple, Optional
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
+from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
 
 try:
     from scipy.stats import linregress
@@ -199,15 +201,20 @@ def get_calibration_files(folder: str) -> List[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Process calibration CSV files.")
     parser.add_argument("folder", nargs="?", help="Folder containing calibration CSV files.")
+    parser.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files")
+    parser.add_argument("--out-dir", default=str(OUT_DIR), help="Directory for output files")
     args = parser.parse_args()
+
+    data_dir = Path(args.data_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
 
     folder = args.folder
     if not folder:
         folder = input("Enter folder path containing calibration csv files [example_calibration]: ").strip() or "example_calibration"
-    if not os.path.isdir(folder):
+    if not os.path.isdir(data_dir/folder):
         raise FileNotFoundError(f"Folder '{folder}' not found")
 
-    files = get_calibration_files(folder)
+    files = get_calibration_files(data_dir/folder)
     if not files:
         raise ValueError("No calibration csv files found in the provided folder")
 
@@ -231,7 +238,7 @@ def main() -> None:
         results.append(record)
 
     data = pd.DataFrame(results)
-    analyze(data, folder)
+    analyze(data, str(data_dir/folder))
 
 
 if __name__ == "__main__":

@@ -5,11 +5,14 @@ from dataclasses import dataclass, field
 from operator import truediv
 from typing import List, Optional, Dict, Tuple
 import math
+from pathlib import Path
 
 import pandas as pd
 import numpy as np
 import requests
 import matplotlib.pyplot as plt
+
+from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
 
 PUBCHEM_URL = (
     "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{}/property/MolecularWeight/TXT"
@@ -229,9 +232,15 @@ def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], pla
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="HTE Dispense Calculator")
+    parser.add_argument("--out-dir", default=str(OUT_DIR))
+    parser.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files for layout_parser")
     parser.add_argument("--output", default=None, help="Excel output file")
     parser.add_argument("--preload", default=None, help="Path to python file with PRELOADED_REAGENTS list")
     args = parser.parse_args()
+
+    out_dir = Path(args.out_dir).resolve()
+    data_dir = Path(args.data_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     layout = input("Plate layout [24/48/96/custom]: ").strip()
     while layout not in {"24", "48", "96", "custom"}:
@@ -258,7 +267,8 @@ def main() -> None:
     plate = Plate(rows, cols)
 
     reaction_name = input("Reaction name: ").strip()
-    output_file = args.output or f"{reaction_name}.xlsx"
+
+    output_file = Path(out_dir / args.output) if args.output else out_dir / f"{reaction_name}.xlsx"
 
     reagents: List[Reagent] = []
     solvents: List[Solvent] = []
@@ -441,7 +451,7 @@ def main() -> None:
     print(f"Results written to {output_file}")
 
     viz_file = f"{reaction_name}_layout.png"
-    visualize_distribution(reagents, solvents, plate, final_volume, viz_file)
+    visualize_distribution(reagents, solvents, plate, final_volume, str(out_dir/viz_file))
     print(f"Layout visualization saved to {viz_file}")
 
 
