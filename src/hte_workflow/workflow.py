@@ -14,7 +14,7 @@ from pathlib import Path
 from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
 import argparse
 
-from hte_workflow import hte_calculator, reaction_analyser
+from hte_workflow import hte_calculator, reaction_analyser, workflow_checker
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +38,8 @@ def run_hte_calculator(prefix: str, preload: Optional[str], data_dir: Path, out_
     output_file = f"{prefix}_calculator.xlsx"
 
     original_argv = sys.argv
-    sys.argv = ["-m",
-                "hte_workflow.hte_calculator",
+    sys.argv = [
+                "hte_calculator",
                 "--output", output_file,
                 "--data-dir", str(data_dir),
                 "--out-dir", str(out_dir),]
@@ -99,7 +99,7 @@ def run_workflow_checker(prefix: str, calculator_file: str, data_dir: Path, out_
     """Fill and visualise the workflow based on the calculator output."""
     template = input("Workflow Excel template file: ").strip()
     workflow_file = f"{prefix}_workflow.xlsx"
-    shutil.copyfile(template, workflow_file)
+    shutil.copyfile(str(data_dir / template), str(data_dir / workflow_file))
 
     subprocess.run(
         [
@@ -116,10 +116,10 @@ def run_workflow_checker(prefix: str, calculator_file: str, data_dir: Path, out_
         check=True,
     )
 
-    _rename("layout.png", f"{prefix}_workflow_layout.png")
-    _rename("experiment_map.png", f"{prefix}_experiment_map.png")
-    _rename("workflow.png", f"{prefix}_workflow_diagram.png")
-    _rename("parsed_layout.xlsx", f"{prefix}_parsed_workflow_layout.xlsx")
+    _rename(str(out_dir/ "layout.png"), str(out_dir/f"{prefix}_workflow_layout.png"))
+    _rename(str(out_dir/"experiment_map.png"), str(out_dir/f"{prefix}_experiment_map.png"))
+    _rename(str(out_dir/"workflow.png"), str(out_dir/f"{prefix}_workflow_diagram.png"))
+    _rename(str(out_dir/"parsed_layout.xlsx"), str(out_dir/f"{prefix}_parsed_workflow_layout.xlsx"))
     return workflow_file
 
 
@@ -157,8 +157,8 @@ def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str,
     dispense_output_file = f"{prefix}_dispense.xlsx"
 
     original_argv = sys.argv
-    sys.argv = ["-m",
-                "hte_workflow.reaction_analyser",
+    sys.argv = [
+                "reaction_analyser",
                 "--data-dir", str(data_dir),
                 "--out-dir", str(out_dir),]
 

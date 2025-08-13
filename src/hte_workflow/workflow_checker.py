@@ -4,7 +4,7 @@ from pathlib import Path
 
 import openpyxl
 import pandas as pd
-from matplotlib.sphinxext.plot_directive import out_of_date
+# from matplotlib.sphinxext.plot_directive import out_of_date
 
 from hte_workflow import layout_parser as lp
 from hte_workflow.paths import DATA_DIR, OUT_DIR
@@ -169,8 +169,8 @@ def main() -> None:
         import sys
 
         original = sys.argv
-        sys.argv = ["-m",
-                    "hte_workflow.layout_parser",
+        sys.argv = [
+                    "lp",
                     "--data-dir", str(data_dir),
                     "--out-dir", str(out_dir),
                     args.workflow]

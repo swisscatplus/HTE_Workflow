@@ -238,7 +238,7 @@ def main() -> None:
     parser.add_argument("--preload", default=None, help="Path to python file with PRELOADED_REAGENTS list")
     args = parser.parse_args()
 
-    out_dir = Path(args.output_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
     data_dir = Path(args.data_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -268,7 +268,7 @@ def main() -> None:
 
     reaction_name = input("Reaction name: ").strip()
 
-    output_file = Path(args.output) if args.output else out_dir / f"{reaction_name}.xlsx"
+    output_file = Path(out_dir / args.output) if args.output else out_dir / f"{reaction_name}.xlsx"
 
     reagents: List[Reagent] = []
     solvents: List[Solvent] = []
@@ -451,7 +451,7 @@ def main() -> None:
     print(f"Results written to {output_file}")
 
     viz_file = f"{reaction_name}_layout.png"
-    visualize_distribution(reagents, solvents, plate, final_volume, viz_file)
+    visualize_distribution(reagents, solvents, plate, final_volume, str(out_dir/viz_file))
     print(f"Layout visualization saved to {viz_file}")
 
 
