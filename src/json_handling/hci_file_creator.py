@@ -326,7 +326,7 @@ def build_chemical_space_from_spec(spec: Dict[str, Any], lib: ChemicalLibrary) -
             min=float(rvals["min"]),
             max=float(rvals["max"]),
             unit=rvals.get("unit",""),
-            step=float(rvals["step"]) if "step" in rvals else None
+            step=float(rvals["step"]) if "step" in rvals else None  # Only makes sense if leads to 3-6 values
         ).to_json()
         ranges[rname] = rng
     campaign.hasRanges = ranges
