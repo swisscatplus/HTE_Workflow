@@ -24,6 +24,9 @@ from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
 import csv, json, argparse
 
+from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
+
+
 # -----------------------------
 # Data structures
 # -----------------------------
@@ -379,7 +382,13 @@ def main():
     ap.add_argument("--library", help="Chemical library file (.json or .csv)")
     ap.add_argument("--spec", help="Chemical space spec Dict")
     ap.add_argument("--out", help="Output chemical space JSON")
+    ap.add_argument("--out-dir", default=str(OUT_DIR))
+    ap.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files for layout_parser")
+
     args = ap.parse_args()
+
+    data_dir = Path(args.data_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
 
     if args.cmd == "build":
         if not args.library or not args.spec or not args.out:
@@ -387,7 +396,7 @@ def main():
         lib = load_library(args.library)
         spec = args.spec
         chemspace = build_chemical_space_from_spec(spec, lib)
-        write_json(chemspace.to_json(), args.out)
+        write_json(chemspace.to_json(), str(out_dir / args.out))
         print(f"Wrote chemical space to {args.out}")
 
 if __name__ == "__main__":
