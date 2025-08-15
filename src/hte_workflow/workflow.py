@@ -330,7 +330,9 @@ def run_bo_script(prefix: str, hci_file: str, limiting: str, well_volume_ul: flo
 # Step 1: HTE calculator
 # ---------------------------------------------------------------------------
 
-def run_hte_calculator(prefix: str, preload: Optional[str], data_dir: Path, out_dir: Path) -> str:
+def run_hte_calculator(prefix: str, data_dir: Path, out_dir: Path,
+                        preload: Optional[str] = None, synthesis: Optional[str] = None,
+                       hci: Optional[str]= None) -> str:
     """Run ``hte_calculator`` and return the path to the generated Excel file."""
     output_file = f"{prefix}_calculator.xlsx"
 
@@ -342,6 +344,10 @@ def run_hte_calculator(prefix: str, preload: Optional[str], data_dir: Path, out_
                 "--out-dir", str(out_dir),]
     if preload:
         sys.argv.extend(["--preload", preload])
+    if synthesis:
+        sys.argv.extend(["--synthesis", synthesis])
+    if hci:
+        sys.argv.extend(["--hci", hci])
 
     import builtins
 
@@ -358,7 +364,7 @@ def run_hte_calculator(prefix: str, preload: Optional[str], data_dir: Path, out_
         # Add more patterns here as needed...
     ]
 
-    if preload:
+    if preload or synthesis or hci:
         AUTO_ANSWERS.extend([
 
             # No need to add more as autofilled correctly
@@ -558,7 +564,7 @@ def main() -> None:
     prefix = f"{date_str}_{exp_name}_{exp_number}"
     well_volume_ul = _ask_float("Well volume in microliters (default 500.0)", 500.0)
 
-    if args.BO:
+    if args.BO == "True":
         print("Bayesian optimization is running. ")
         synthesis_file = run_bo_script(
             prefix=prefix,
@@ -582,15 +588,14 @@ def main() -> None:
     If synthesis file is provided, it will be used to run the calculator.
     """
 
-    if not synthesis_file:
+    if not synthesis_file and not args.hci_file:  # legacy mode
         preload = input("Preloaded reagents file (blank if none): ").strip() or None
 
-        calculator_file = run_hte_calculator(prefix, preload, data_dir, out_dir)
+        calculator_file = run_hte_calculator(prefix, data_dir, out_dir, preload=preload)
+    elif synthesis_file:
+        calculator_file = run_hte_calculator(prefix, data_dir, out_dir, synthesis=synthesis_file, hci=str(args.hci_file))
     else:
-        # This doesn't work yet, as the calculator expects a different format
-        # and the synthesis file is not in the expected format.
-        # Coming soon
-        calculator_file = run_hte_calculator(prefix, synthesis_file, data_dir, out_dir)
+        calculator_file = run_hte_calculator(prefix, data_dir, out_dir, hci=str(args.hci_file))
 
     print(f"Reagents calculated and saved to {calculator_file}.")
     input("Prepare the digital twin and download the workflow template. Press Enter to continue...")

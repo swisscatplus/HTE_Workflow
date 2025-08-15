@@ -3,9 +3,10 @@ import importlib.util
 import string
 from dataclasses import dataclass, field
 from operator import truediv
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any, cast
 import math
 from pathlib import Path
+from matplotlib.axes import Axes
 
 import pandas as pd
 import numpy as np
@@ -206,9 +207,12 @@ def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], pla
     n = len(items)
     cols = min(4, n)
     rows = math.ceil(n / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
-    axes = axes.flatten() if n > 1 else [axes]
-    for ax in axes[n:]:
+    fig, axarr = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
+
+    # Normalize to a plain List[Axes] for the type checker and for consistent iteration
+    axes_list = np.atleast_1d(axarr).ravel().tolist()
+    axes: List[Axes] = cast(List[Axes], axes_list)
+    for ax in axes[len(items):]:
         ax.axis('off')
     for ax, item in zip(axes, items):
         if isinstance(item, Reagent) and not item.moles.empty:
@@ -229,6 +233,278 @@ def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], pla
     plt.savefig(output)
     plt.close(fig)
 
+def ensure_molar_mass(self) -> None:
+    # Prefer pre-populated molar mass (e.g., from HCI), otherwise fetch by InChIKey if possible
+    if self.molar_mass is not None:
+        return
+    if self.inchikey:
+        self.molar_mass = fetch_molar_mass(self.inchikey)
+    else:
+        raise ValueError(f"Molar mass unknown for {self.name}; provide InChIKey or preload molar_mass.")
+
+# ---------- synthesis.json pipeline ----------
+
+def _df_bool(rows: List[str], cols: List[int], default=False) -> pd.DataFrame:
+    return pd.DataFrame(default, index=rows, columns=cols)
+
+def _well_labels(rows: int, cols: int) -> List[str]:
+    return [f"{string.ascii_uppercase[r]}{c}" for r in range(rows) for c in range(1, cols+1)]
+
+def _experiments_to_plate_map(meta: Dict) -> Dict[str, str]:
+    """
+    meta["experiment_to_well"]: [{experiment: "1", well: "A1"}, ...]
+    Returns {"1":"A1", "2":"A2", ...}
+    """
+    mapping = {}
+    for item in meta.get("experiment_to_well", []):
+        mapping[str(item["experiment"])] = item.get("well")
+    return mapping
+
+def _empty_plate_like(rows: int, cols: int, fill=0.0) -> pd.DataFrame:
+    return pd.DataFrame(fill, index=list(string.ascii_uppercase[:rows]), columns=list(range(1, cols+1)))
+
+def load_synthesis_and_emit_outputs(
+    synthesis_path: Path,
+    out_dir: Path,
+    reaction_name: Optional[str] = None,
+) -> None:
+    """
+    Read synthesis.json (experiment-keyed), compute per-well tables and totals, and write Excel + visualization.
+    - Stock solutions are assumed already expanded inside synthesis.json (we don't re-derive).
+    - Visualization also includes per-well heatmaps for 'temperature' and 'time' when present.
+    """
+    synth = pd.read_json(synthesis_path, typ="dictionary")
+    meta = synth["meta"]
+    exps: Dict[str, Any] = synth["experiments"]
+
+    # Plate layout
+    rows = int(meta["layout"]["rows"])
+    cols = int(meta["layout"]["cols"])
+    well_volume_uL_global = meta.get("limiting", {}).get("well_volume_uL")  # may be used as a check only
+    exp2well = _experiments_to_plate_map(meta)
+    row_index = list(string.ascii_uppercase[:rows])
+    col_index = list(range(1, cols+1))
+
+    # Build per-well globals (temperature/time/concentration if present)
+    globals_keys = set()
+    for e in exps.values():
+        globals_keys.update((e.get("globals") or {}).keys())
+
+    globals_frames: Dict[str, pd.DataFrame] = {
+        k: _empty_plate_like(rows, cols, fill=np.nan) for k in globals_keys
+    }
+
+    # Collect dispenses → one DataFrame per chemical (uL or mg), and “moles” if present
+    per_chem_vol: Dict[str, pd.DataFrame] = {}
+    per_chem_mass: Dict[str, pd.DataFrame] = {}
+    per_chem_moles: Dict[str, pd.DataFrame] = {}
+
+    # Final per-well volume = sum of all liquid volumes reported in dispersion entries (uL)
+    final_volume = _empty_plate_like(rows, cols, fill=0.0)
+
+    # Pass over experiments
+    for exp_key, payload in exps.items():
+        well = exp2well.get(str(exp_key))
+        if not well:
+            continue
+        row_label, col_label = well[0], int(well[1:])
+        # globals
+        for k, v in (payload.get("globals") or {}).items():
+            globals_frames[k].loc[row_label, col_label] = float(v)
+
+        # dispenses
+        for d in payload.get("dispenses", []):
+            chem = d.get("chemicalName") or d.get("chemicalID") or "unknown"
+            vol = d.get("volume_uL")
+            mass_mg = d.get("mass_mg")
+            moles = d.get("moles")
+
+            if vol is not None:
+                df = per_chem_vol.setdefault(chem, _empty_plate_like(rows, cols, fill=0.0))
+                df.loc[row_label, col_label] += float(vol)
+                final_volume.loc[row_label, col_label] += float(vol)
+
+            if mass_mg is not None:
+                dfm = per_chem_mass.setdefault(chem, _empty_plate_like(rows, cols, fill=0.0))
+                dfm.loc[row_label, col_label] += float(mass_mg)
+
+            if moles is not None:
+                dfmol = per_chem_moles.setdefault(chem, _empty_plate_like(rows, cols, fill=0.0))
+                dfmol.loc[row_label, col_label] += float(moles)
+
+    # Build Excel sheets-like structure
+    results: Dict[str, pd.DataFrame] = {}
+    totals: Dict[str, float] = {}
+
+    # Volumes (uL)
+    for chem, df in per_chem_vol.items():
+        key = f"{chem} (uL)"
+        results[key] = df
+        totals[key] = float(df.sum().sum())
+
+    # Masses (mg)
+    for chem, df in per_chem_mass.items():
+        key = f"{chem} (mg)"
+        results[key] = df
+        totals[key] = float(df.sum().sum())
+
+    # Moles
+    for chem, df in per_chem_moles.items():
+        key = f"{chem} (mmol)"
+        results[key] = df / 1000.0  # optional: change units or keep as "mol" if you prefer
+
+    # Per-well globals into results (for convenience; also used in visualization)
+    for k, df in globals_frames.items():
+        results[f"[global] {k}"] = df
+
+    # Write Excel
+    reaction_name = reaction_name or "synthesis"
+    output_file = out_dir / f"{reaction_name}.xlsx"
+    with pd.ExcelWriter(output_file) as writer:
+        # Per-well sheet (multicol — same as your previous structure)
+        per_well = pd.concat(results, axis=1)
+        per_well.index.name = "Row"
+        per_well.to_excel(writer, sheet_name="per_well")
+
+        # Totals
+        if totals:
+            pd.Series(totals, name="Total").to_frame().to_excel(writer, sheet_name="totals")
+
+    # Visualization:
+    # 1) heatmap per chemical based on moles / final_volume (M), if moles present
+    # 2) heatmaps for temperature and time if present
+    viz_file = out_dir / f"{reaction_name}_layout.png"
+    visualize_distribution_synthesis(per_chem_moles, final_volume, rows, cols, results_globals=globals_frames, out_path=viz_file)
+    print(f"Results written to {output_file}\nLayout visualization saved to {viz_file}")
+
+def visualize_distribution_synthesis(
+    per_chem_moles: Dict[str, pd.DataFrame],
+    final_volume: pd.DataFrame,
+    rows: int, cols: int,
+    results_globals: Optional[Dict[str, pd.DataFrame]] = None,
+    out_path: Path = Path("layout.png"),
+) -> None:
+    """
+    Make a compact grid: chemicals (by concentration) + globals (temperature/time).
+    """
+    # chemicals
+    chem_names = list(per_chem_moles.keys())
+    # globals (temperature/time/others)
+    global_names = list((results_globals or {}).keys())
+
+    n_items = len(chem_names) + len(global_names)
+    if n_items == 0:
+        return
+
+    ncols = min(4, max(1, n_items))
+    nrows = math.ceil(n_items / ncols)
+    fig, axarr = plt.subplots(nrows, ncols, figsize=(ncols * 3.2, nrows * 3.2))
+
+    axes_list = np.atleast_1d(axarr).ravel().tolist()
+    axes: List[Axes] = cast(List[Axes], axes_list)
+
+    idx = 0
+    # Chemicals: plot concentration if moles are present
+    for chem in chem_names:
+        ax = axes[idx]; idx += 1
+        mol = per_chem_moles[chem]  # mol per well
+        conc = mol / (final_volume / 1_000_000)  # M
+        conc = conc.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        im = ax.imshow(conc.values, cmap="viridis")
+        ax.set_title(chem)
+        ax.set_xticks(range(cols)); ax.set_yticks(range(rows))
+        ax.set_xticklabels(range(1, cols+1)); ax.set_yticklabels(list(string.ascii_uppercase[:rows]))
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04); cbar.set_label("M")
+
+    # Globals
+    for g in global_names:
+        ax = axes[idx]; idx += 1
+        df = results_globals[g].astype(float)
+        im = ax.imshow(df.values, cmap="coolwarm")
+        ax.set_title(g)
+        ax.set_xticks(range(cols)); ax.set_yticks(range(rows))
+        ax.set_xticklabels(range(1, cols+1)); ax.set_yticklabels(list(string.ascii_uppercase[:rows]))
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04); cbar.set_label(g)
+
+    # Hide unused axes
+    for j in range(idx, len(axes)):
+        axes[j].axis("off")
+
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close(fig)
+
+# ---------- HCI preload helpers ----------
+
+def preload_from_hci(hci_path: Path, plate: "Plate") -> Tuple[List["Reagent"], List["Solvent"]]:
+    """
+    Parse HCI JSON (your hasCampaign shape), construct preloaded Reagent/Solvent instances.
+    - chemicalName, physicalstate -> map to rtype ('solid'/'liquid'/'solvent')
+    - density/concentration/molecularMass if present
+    - InChIKey may be absent; if so, molar_mass must be present in HCI to avoid fetch.
+    """
+    data = pd.read_json(hci_path, typ="dictionary")
+    c = data["hasCampaign"]
+
+    reagents: List[Reagent] = []
+    solvents: List[Solvent] = []
+
+    # Catalog chemicals (not necessarily in groups)
+    for ref in c.get("hasChemical", []):
+        name = ref.get("chemicalName") or ref.get("chemicalID")
+        phys = (ref.get("physicalstate") or "").lower()
+        rtype = "solid"
+        if phys in {"liquid", "solution"}:
+            rtype = "liquid"
+
+        mm = None
+        if isinstance(ref.get("molecularMass"), dict):
+            try:
+                mm = float(ref["molecularMass"].get("value"))
+            except Exception:
+                pass
+        dens = None
+        if isinstance(ref.get("density"), dict):
+            try:
+                dens = float(ref["density"].get("value"))
+            except Exception:
+                pass
+        conc = None
+        if isinstance(ref.get("concentration"), dict):
+            try:
+                conc = float(ref["concentration"].get("value"))
+            except Exception:
+                pass
+
+        inchikey = ref.get("InchiKey") or ref.get("InChIKey") or ""  # HCI may not carry this
+
+        # Heuristic: if name looks like a solvent (or physicalstate == 'solution' with no MW needed), let the user place it as solvent
+        # We'll default to reagent; user can reclassify when prompted for "Type" if needed.
+        reagent = Reagent(
+            name=str(name),
+            inchikey=inchikey,
+            rtype=rtype,
+            equivalents=1.0,       # default; user will adjust interactively
+            is_limiting=False,
+            density=dens,
+            concentration=conc,
+            molar_mass=mm,
+        )
+        # Ask for placement on plate during interactive flow; here we only scaffold.
+        reagents.append(reagent)
+
+    # Groups can include solvents explicitly — if you’d like to pre-mark solvents from group "solvent", do it here:
+    for g in c.get("hasGroups", []):
+        if g.get("groupName", "").lower() == "solvent":
+            for m in g.get("members", []):
+                ref = m.get("reference") or {}
+                nm = ref.get("chemicalName")
+                if nm:
+                    # create a Solvent entry (placement still asked interactively)
+                    solvents.append(Solvent(name=nm, inchikey=ref.get("InChIKey","")))
+
+    return reagents, solvents
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="HTE Dispense Calculator")
@@ -236,11 +512,26 @@ def main() -> None:
     parser.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files for layout_parser")
     parser.add_argument("--output", default=None, help="Excel output file")
     parser.add_argument("--preload", default=None, help="Path to python file with PRELOADED_REAGENTS list")
+    parser.add_argument("--synthesis", default=None, help="Synthesis.json file")
+    parser.add_argument("--hci", default=None, help="HCI file")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir).resolve()
     data_dir = Path(args.data_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.synthesis:
+        synth_path = str(out_dir / args.synthesis)
+        synth_path = Path(synth_path)
+        if not synth_path.exists():
+            raise FileNotFoundError(f"synthesis.json file not found: {synth_path}")
+        reaction_name = args.output
+        ensure_dirs()
+        load_synthesis_and_emit_outputs(synth_path, out_dir, reaction_name=reaction_name)
+        return
+
+    if not args.hci and not args.preload:
+        raise SystemExit("When --synthesis is not given, please supply --hci (preferred) or --preload.")
 
     layout = input("Plate layout [24/48/96/custom]: ").strip()
     while layout not in {"24", "48", "96", "custom"}:
@@ -274,6 +565,20 @@ def main() -> None:
     solvents: List[Solvent] = []
     stock_solutions: List[Stock_Solution] = []
 
+    # Preferred preload source: HCI
+    if args.hci:
+        try:
+            hci_path = str(out_dir / args.hci)
+            pre_r, pre_s = preload_from_hci(Path(hci_path), plate)
+            reagents.extend(pre_r)
+            solvents.extend(pre_s)
+            if reagents or solvents:
+                print(
+                    f"Preloaded from HCI: {len(reagents)} reagents, {len(solvents)} solvents (you can edit/confirm in prompts).")
+        except Exception as e:
+            print(f"Warning: failed to preload from HCI: {e}")
+
+    # Legacy preload (optional)
     if args.preload:
         loaded_reagents, loaded_solvents = load_preloaded_reagents(args.preload, plate)
         reagents.extend(loaded_reagents)
