@@ -1,12 +1,15 @@
+from __future__ import annotations
+
 import os
 import sys
 import shutil
 import datetime
 import subprocess
 import re
+import json
 
 from importlib import import_module
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Any, Dict
 
 import pandas as pd
 
@@ -15,6 +18,7 @@ from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
 import argparse
 
 from hte_workflow import hte_calculator, reaction_analyser, workflow_checker
+from json_handling.hci_file_creator import build_chemical_space_from_spec, load_library
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +32,225 @@ def _rename(src: str, dst: str) -> Optional[str]:
         return dst
     return None
 
+def _ask(prompt: str, default: Optional[str] = None) -> str:
+    sfx = f" [{default}]" if default is not None else ""
+    val = input(f"{prompt}{sfx}: ").strip()
+    return default if (val == "" and default is not None) else val
+
+def _ask_float(prompt: str, default: Optional[float] = None) -> Optional[float]:
+    while True:
+        raw = _ask(prompt, str(default) if default is not None else None)
+        if raw == "" and default is None:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            print("Please enter a number.")
+
+def _ask_yesno(prompt: str, default: bool = True) -> bool:
+    dv = "y" if default else "n"
+    while True:
+        raw = _ask(f"{prompt} (y/n)", dv).lower()
+        if raw in ("y", "yes"): return True
+        if raw in ("n", "no"):  return False
+        print("Please answer y/n.")
+
+def _ask_range(name: str, unit_default: str = "", step_optional: bool = True) -> Optional[Dict[str, Any]]:
+    if not _ask_yesno(f"Add global range for '{name}'?", False):
+        return None
+    r: Dict[str, Any] = {}
+    r["min"]  = _ask_float(f"  {name} min", 0.0)
+    r["max"]  = _ask_float(f"  {name} max", 1.0)
+    r["unit"] = _ask(f"  {name} unit", unit_default)
+    if not step_optional or _ask_yesno("  Add step?", False):
+        step = _ask_float("  step", None)
+        if step is not None:
+            r["step"] = step
+    return r
+
+
+def _ask_group_metadata() -> Optional[Dict[str, Any]]:
+    if not _ask_yesno("Add a group (e.g., catalyst/solvent/base)?", True):
+        return None
+    g: Dict[str, Any] = {}
+    g["groupName"] = _ask("  Group name", "catalyst")
+    g["description"] = _ask("  Description", "")
+    g["selectionMode"] = _ask("  Selection mode [one-of/any/at-least-one]", "one-of")
+
+    print("  Equivalents range for this group (applies to selected member at runtime):")
+    eq: Dict[str, Any] = {}
+    eq["min"]  = _ask_float("    eq min", 0.01)
+    eq["max"]  = _ask_float("    eq max", 0.10)
+    eq["unit"] = _ask("    eq unit", "eq")
+    if _ask_yesno("    Add step?", False):
+        step = _ask_float("    step", None)
+        if step is not None:
+            eq["step"] = step
+    g["equivalents"] = eq
+    g["fixed"] = _ask_yesno("  Is this group fixed (always included)?", True)
+
+    # NOTE: no members collected here
+    return g
+
+def _ask_catalog_chemicals_with_group_assignment(
+    lib_names: List[str],
+    groups_meta: List[Dict[str, Any]],
+) -> tuple[list[Dict[str, Any]], dict[str, list[str]]]:
+    """
+    Collect catalog chemicals (all go in HCI 'chemicals') and, for each, ask which group(s)
+    it belongs to. Returns:
+      - chemicals: list[{"chemicalName": name, "descriptors": {...}?}]
+      - assignments: {groupName: [chemicalName, ...], ...}
+    """
+
+    chemicals: List[Dict[str, Any]] = []
+    assignments: Dict[str, List[str]] = {g["groupName"]: [] for g in groups_meta}
+
+    print("  Add chemicals by *chemicalName* (must exist in the library).")
+    print("  Type 'list' to preview library names; press ENTER on empty to finish.")
+
+    group_names = [g["groupName"] for g in groups_meta]
+
+    while True:
+        nm = _ask("    chemicalName", None)
+        if not nm:
+            break
+        if nm.lower() == "list":
+            print("    Library names (first 20):", ", ".join(lib_names[:20]), "...")
+            continue
+
+        # Optional descriptors for this chemical
+        if _ask_yesno("    Add descriptors JSON for this chemical?", False):
+            raw = _ask("      descriptors JSON", "{}")
+            try:
+                desc = json.loads(raw)
+            except Exception as e:
+                print(f"      Invalid JSON ({e}); skipping descriptors.")
+                desc = None
+        else:
+            desc = None
+
+        chemicals.append({"chemicalName": nm, **({"descriptors": desc} if desc else {})})
+
+        # Ask group membership(s)
+        if group_names:
+            print("    Assign to groups (y/n):")
+            for gname in group_names:
+                if _ask_yesno(f"      - {gname}?", False):
+                    assignments[gname].append(nm)
+
+    return chemicals, assignments
+
+def interactive_create_hci(*, library_path: str | Path, out_dir: str | Path) -> Path:
+    """
+    Interactively ask for a minimal spec, build the HCI JSON via your builder, and write it.
+    Returns the written path.
+    """
+    # Load library (so we can validate names & show suggestions)
+    lib = load_library(library_path)
+    # We only need names list for nicer prompts
+    try:
+        # ChemicalLibrary stores records keyed by lower-case name internally;
+        # expose a sorted list for user convenience
+        lib_names = sorted([getattr(rec, "chemicalName") for rec in lib._by_name.values()])
+    except Exception:
+        lib_names = []
+        print("Empty Library; refer to a different one or fill the library first.")
+
+    # ---- campaign meta
+    print("\n=== Campaign metadata ===")
+    campaignName  = _ask("Campaign name", "Give a name please you fool!")
+    description   = _ask("Description", "")
+    objective_txt = _ask("Objective (free text)", "")
+    campaignClass = _ask("Campaign class", "Standard Research")
+    type_txt      = _ask("Type", "optimization")
+    reference     = _ask("Reference (URL/DOI/free text)", "")
+
+    # Batch (minimal)
+    print("\n=== Batch info ===")
+    hasBatch = {
+        "batchID": _ask("  batchID", "0"),
+        "batchName": _ask("  batchName (e.g., YYYYMMDD)", str(datetime.date.today().strftime("%Y%m%d"))),
+        "reactionType": _ask("  reactionType", ""),
+        "reactionName": _ask("  reactionName", ""),
+        "optimizationType": _ask("  optimizationType", ""),
+        "link": _ask("  link", "")
+    }
+
+    # Objective block
+    print("\n=== Objective block ===")
+    hasObjective = {
+        "criteria": _ask("  criteria", ),
+        "condition": _ask("  condition", ""),
+        "description": _ask("  description", ""),
+        "objectiveName": _ask("  objectiveName", "")
+    }
+
+    # ---- global ranges
+    print("\n=== Global ranges ===")
+    print("Set min and max to the same value to disable a range.")
+    ranges: Dict[str, Dict[str, Any]] = {}
+    # Offer common knobs, and allow arbitrary
+    for name, unit in (("temperature", "C"), ("concentration", "M"), ("time", "min")):
+        r = _ask_range(name, unit_default=unit, step_optional=True)
+        if r:
+            ranges[name] = r
+    while _ask_yesno("Add another custom global range (e.g. pressure)?", False):
+        nm = _ask("  range name", "")
+        if nm:
+            r = _ask_range(nm, unit_default="")
+            if r:
+                ranges[nm] = r
+
+    # ---- groups
+    print("\n=== Groups (BO-controlled factors) ===")
+    groups_meta: List[Dict[str, Any]] = []
+    while True:
+        g = _ask_group_metadata()
+        if not g:
+            break
+        groups_meta.append(g)
+
+    # ---- catalog chemicals (not in any group)
+    print("\n=== Catalog chemicals (not part of any group) ===")
+    chemicals, assignments = _ask_catalog_chemicals_with_group_assignment(lib_names, groups_meta)
+
+    # --- materialize groups with members from assignments ---
+    groups: List[Dict[str, Any]] = []
+    for g in groups_meta:
+        gname = g["groupName"]
+        names_for_group = assignments.get(gname, [])
+        members = [{"name": nm} for nm in names_for_group]
+        groups.append({
+            **g,
+            "members": members,  # now populated
+        })
+
+    # ---- spec dict matches your build_chemical_space_from_spec
+    spec: Dict[str, Any] = {
+        "campaignName": campaignName,
+        "description": description,
+        "objective": objective_txt,
+        "campaignClass": campaignClass,
+        "type": type_txt,
+        "reference": reference,
+        "hasBatch": hasBatch,
+        "hasObjective": hasObjective,
+        "ranges": ranges,
+        "groups": groups,
+        "chemicals": chemicals,
+    }
+
+    # Build Campaign -> HCI JSON
+    campaign = build_chemical_space_from_spec(spec, lib)
+    hci_json = campaign.to_json()
+
+    out_name = (f"{campaignName}_{hasBatch["batchID"]}_hci.json")
+    out_path = Path(out_dir/out_name).resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(hci_json, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\nWrote HCI file to: {out_path.resolve()}")
+    return out_path
 
 # ---------------------------------------------------------------------------
 # Step 1: HTE calculator
@@ -204,6 +427,18 @@ def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="HTE workflow orchestration script")
+    parser.add_argument("--library-path",
+                        default = None,
+                        help = "Path to the chemical library file (HCI format)"
+                        )
+    parser.add_argument("--hci-file",
+                        default=None,
+                        help="Path to the HCI file to create (if not provided, will be created interactively)")
+    parser.add_argument("--synth-file",
+                        default=None,
+                        help="Path to the synthesis file to create (if not provided, will be created interactively)")
+    parser.add_argument("--BO",
+                        default=False)
     parser.add_argument(
         "--data-dir",
         default=str(DATA_DIR),
@@ -218,6 +453,32 @@ def main() -> None:
 
     data_dir = Path(args.data_dir).resolve()
     out_dir = Path(args.out_dir).resolve()
+
+    if args.BO and args.synth_file:
+        print("Bayesian optimization mode doesn't take in synthesis files.")
+        sys.exit(1)
+
+    if not args.library_path:
+        lib_path = input("Library path: ").strip()
+    else:
+        lib_path = args.library_path
+    library_path = str(data_dir/Path(lib_path).resolve())
+    if not os.path.exists(library_path):
+        print(f"Library file {library_path} does not exist.")
+        sys.exit(1)
+
+    if not args.hci_file:
+        hci_file_path = interactive_create_hci(library_path=library_path, out_dir=out_dir)
+    else:
+        hci_file_path = str(out_dir/Path(args.hci_file).resolve())
+        if not os.path.exists(hci_file_path):
+            print(f"HCI file {hci_file_path} does not exist.")
+            sys.exit(1)
+
+    if args.BO:
+        # Placeholder for Bayesian optimization logic
+        print("Bayesian optimization mode is not implemented yet.")
+        sys.exit(1)
 
     exp_name = input("Experiment name: ").strip()
     exp_number = input("Experiment number: ").strip()
@@ -238,7 +499,7 @@ def main() -> None:
     print("Upload the workflow file to Arcsuite and run the reaction.")
     input("Perform the reaction analysis (HPLC) and the calibration. Press Enter to continue to the analysis once finished...")
 
-    analysis_path = run_reaction_analysis(prefix, limiting, calculator_file)
+    analysis_path = run_reaction_analysis(prefix, limiting, calculator_file, data_dir, out_dir)
 
 
 
