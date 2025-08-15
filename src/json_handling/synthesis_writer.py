@@ -149,7 +149,8 @@ def write_synthesis_json(
         exp_key = _exp_key(i, start=experiment_start_index)
         well_label = well_labels[i] if i < len(well_labels) else None
 
-        dispenses = []
+        non_solvent_dispenses = []
+        solvent_dispense = None
 
         if limiting_moles is not None:
             moles_lim_this = float(limiting_moles)
@@ -196,7 +197,9 @@ def write_synthesis_json(
                 if phys in {"liquid", "solution"} and dens is None and conc is None:
                     notes.append("no density/concentration; cannot compute volume")
 
-            dispenses.append({
+            is_solvent_group = (gname.lower() == "solvent")
+
+            entry = {
                 "group": gname,
                 "chemicalID": ref.get("chemicalID"),
                 "chemicalName": ref.get("chemicalName"),
@@ -207,7 +210,26 @@ def write_synthesis_json(
                 "volume_uL": vol_uL,
                 "reference": ref,
                 "notes": "; ".join(notes) if notes else ""
-            })
+            }
+
+            if is_solvent_group:
+                entry["volume_uL"] = 0
+                if solvent_dispense is None:
+                    solvent_dispense = entry
+            else:
+                non_solvent_dispenses.append(entry)
+
+        dispenses = non_solvent_dispenses
+        if solvent_dispense is not None:
+            if well_volume_uL is None:
+                # cannot compute residual
+                solvent_dispense["notes"] = (solvent_dispense.get("notes", "") + "; " if solvent_dispense.get(
+                    "notes") else "") + "no well_volume_uL; cannot compute residual solvent volume"
+            else:
+                used = sum(x["volume_uL"] or 0.0 for x in non_solvent_dispenses)
+                residual = max(float(well_volume_uL) - used, 0.0)
+                solvent_dispense["volume_uL"] = residual
+            dispenses.append(solvent_dispense)
 
         if i == 0:
             non_group_catalog = _non_group_catalog_chemicals(opt_spec)

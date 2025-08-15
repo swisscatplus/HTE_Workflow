@@ -88,17 +88,25 @@ def _ask_group_metadata() -> Optional[Dict[str, Any]]:
     g["selectionMode"] = _ask("  Selection mode [one-of/any/at-least-one]", "one-of")
 
     print("  Equivalents range for this group (applies to selected member at runtime):")
-    eq: Dict[str, Any] = {}
-    eq["min"]  = _ask_float("    eq min", 0.01)
-    eq["max"]  = _ask_float("    eq max", 0.10)
-    eq["unit"] = _ask("    eq unit", "eq")
-    if _ask_yesno("    Add step?", False):
-        step = _ask_float("    step", None)
-        if step is not None:
-            eq["step"] = step
+    if g["groupName"].lower() == "solvent":
+        print("    NOTE: For solvents, the volume will be calculated via the concentration.")
+        eq: Dict[str, Any] = {}
+        eq["min"] = 1
+        eq["max"] = 1
+        eq["unit"] = "eq"
+    else:
+        eq: Dict[str, Any] = {}
+        eq["min"]  = _ask_float("    eq min", 0.01)
+        eq["max"]  = _ask_float("    eq max", 0.10)
+        eq["unit"] = _ask("    eq unit", "eq")
+        if _ask_yesno("    Add step?", False):
+            step = _ask_float("    step", None)
+            if step is not None:
+                eq["step"] = step
     g["equivalents"] = eq
     g["fixed"] = _ask_yesno("  Is this group fixed (always included)?", True)
-
+    # still need to include what happens if this is not fixed
+    
     # NOTE: no members collected here
     return g
 
