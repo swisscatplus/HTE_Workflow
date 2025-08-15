@@ -106,7 +106,7 @@ def _ask_group_metadata() -> Optional[Dict[str, Any]]:
     g["equivalents"] = eq
     g["fixed"] = _ask_yesno("  Is this group fixed (always included)?", True)
     # still need to include what happens if this is not fixed
-    
+
     # NOTE: no members collected here
     return g
 

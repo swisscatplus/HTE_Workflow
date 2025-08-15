@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union, Optional
 import random
+from itertools import product
 
 import argparse
 import math
@@ -153,6 +154,95 @@ def propose_plate_with_temperature_BO_auto(
 
     return best_T, best_cand
 
+# ---------------------------
+# Fixing other numeric parameters (time)
+# ---------------------------
+
+def _range_from_spec(opt_spec: Dict[str, Any], key: str) -> Optional[Dict[str, float]]:
+    rng = (opt_spec.get("globals") or {}).get(key)
+    if rng is None:
+        c = opt_spec.get("hasCampaign", {})
+        rng = (c.get("hasRanges") or {}).get(key)
+    if not rng:
+        return None
+    return {"min": float(rng["min"]), "max": float(rng["max"]), "unit": rng.get("unit", "")}
+
+def _candidates_for_range(rng: Dict[str, float], how: str = "grid", k: int = 7) -> list[float]:
+    lo, hi = rng["min"], rng["max"]
+    if how == "grid":
+        if k < 2: return [(lo + hi) / 2.0]
+        step = (hi - lo) / (k - 1)
+        return [lo + i * step for i in range(k)]
+    import random
+    random.seed(123)
+    return [random.uniform(lo, hi) for _ in range(k)]
+
+def propose_plate_with_plate_globals_BO_auto(
+    *,
+    encoder,
+    parameters_all: list[dict],
+    results: list[dict],
+    q: int,
+    plate_globals: dict[str, dict],   # e.g. {"global:temperature": {"min":..,"max":..}, "global:time": {...}}
+    how: str = "grid",
+    k_per_dim: int = 7,
+    use_noisy_ei: bool = True,
+):
+    # training data / model
+    X_train, y_train = build_training_tensors(encoder, results, parameters_all)
+    if X_train is None:
+        # Sobol init; fix coords to midpoints
+        sobol = torch.quasirandom.SobolEngine(dimension=encoder.dim, scramble=True, seed=123)
+        Xq = sobol.draw(q).to(torch.double)
+        for pname, rng in plate_globals.items():
+            idx = _find_param_index_numeric_auto(encoder, pname)
+            lo, hi = rng["min"], rng["max"]
+            Xq[:, idx] = 0.5 if hi > lo else 0.0
+        # decode physical values for reporting
+        chosen = {pname: (rng["min"] + rng["max"]) / 2.0 for pname, rng in plate_globals.items()}
+        return chosen, Xq
+
+    gp = SingleTaskGP(X_train, y_train)
+    mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
+    fit_gpytorch_mll(mll)
+    acq = qNoisyExpectedImprovement(model=gp, X_baseline=X_train, sampler=SobolQMCNormalSampler(128)) \
+          if use_noisy_ei else \
+          qExpectedImprovement(model=gp, best_f=y_train.max(), sampler=SobolQMCNormalSampler(128))
+
+    # build candidate grids (physical values) and indices
+    names = list(plate_globals.keys())
+    grids = [_candidates_for_range(plate_globals[n], how=how, k=k_per_dim) for n in names]
+    idxs  = {n: _find_param_index_numeric_auto(encoder, n) for n in names}
+    mins  = {n: plate_globals[n]["min"] for n in names}
+    maxs  = {n: plate_globals[n]["max"] for n in names}
+
+    best_val = -1e18
+    best_phys = None
+    best_cand = None
+
+    for phys_tuple in product(*grids):
+        fixed_features = {}
+        for n, phys in zip(names, phys_tuple):
+            lo, hi = mins[n], maxs[n]
+            fixed_features[idxs[n]] = 0.0 if hi <= lo else (phys - lo) / (hi - lo)
+
+        lb, ub = encoder.bounds()
+        cand, val = optimize_acqf(
+            acq_function=acq,
+            bounds=torch.stack((lb, ub)),
+            q=q,
+            num_restarts=10,
+            raw_samples=256,
+            fixed_features=fixed_features,
+            options={"batch_limit": 5, "maxiter": 200},
+        )
+        val_f = float(val.detach().item()) if torch.is_tensor(val) else float(val)
+        if val_f > best_val:
+            best_val = val_f
+            best_phys = {n: v for n, v in zip(names, phys_tuple)}
+            best_cand = cand.detach()
+
+    return best_phys, best_cand
 
 # ---------------------------
 # Encoding / decoding of parameters
@@ -352,6 +442,7 @@ def main():
     ap.add_argument("--well-volume-uL", type=float, help="Total volume per well (µL) for concentration-based dosing")
     ap.add_argument("--use-descriptors", default = True, help="Use descriptors in encoding (default: True)")
     ap.add_argument("--fix-plate-temperature", default = True)
+    ap.add_argument("--fix-plate-time", default = True, help="Fix plate time to a single value (default: False)")
 
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     ap.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files for layout_parser")
@@ -379,7 +470,7 @@ def main():
     if temp_rng is None:
         raise SystemExit("No temperature range found (hasRanges.temperature).")
 
-    if args.fix_plate_temperature:
+    if args.fix_plate_temperature and not args.fix_plate_time:
         best_T, Xq = propose_plate_with_temperature_BO_auto(
             encoder=encoder,
             parameters_all=opt_spec["parameters"],
@@ -389,8 +480,31 @@ def main():
             temp_param_name="global:temperature",
             use_noisy_ei=True,
         )
+        chosen_globals = None
+    elif args.fix_plate_time and args.fix_plate_temperature:
+        plate_globals = {}
+        temp_rng = _range_from_spec(opt_spec, "temperature")
+        if temp_rng: plate_globals["global:temperature"] = temp_rng
+        time_rng = _range_from_spec(opt_spec, "time")
+        if time_rng: plate_globals["global:time"] = time_rng
+
+        if not plate_globals:
+            raise SystemExit("No plate-global ranges found (expected 'temperature' and/or 'time').")
+
+        chosen_globals, Xq = propose_plate_with_plate_globals_BO_auto(
+            encoder=encoder,
+            parameters_all=opt_spec["parameters"],
+            results=past,
+            q=plate_size,
+            plate_globals=plate_globals,  # fixes these coords during optimization
+            how="grid",
+            k_per_dim=5,  # 5x5 grid for (temp,time). Adjust as needed.
+            use_noisy_ei=True,
+        )
+        best_T = None
     else:
         # Propose q = plate-size
+        chosen_globals = None
         best_T = None
         Xq = propose_batch(encoder, parameters, past, q=plate_size, use_noisy_ei=True)
 
@@ -403,6 +517,12 @@ def main():
         for s in sels:
             s.setdefault("globals", {})
             s["globals"]["temperature"] = best_T
+    if chosen_globals is not None:
+        for s in sels:
+            s.setdefault("globals", {})
+            for disp_name, phys in chosen_globals.items():
+                key = disp_name.split(":", 1)[1]  # "global:temperature" -> "temperature"
+                s["globals"][key] = phys
 
     # Hand off to writer
     from json_handling.synthesis_writer import write_synthesis_json
