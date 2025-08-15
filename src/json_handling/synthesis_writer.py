@@ -119,9 +119,9 @@ def write_synthesis_json(
     *,
     limiting_name: Optional[str] = None,
     limiting_moles: Optional[float] = None,
-    limiting_conc: Optional[float] = None,   # M
     well_volume_uL: Optional[float] = None,
     experiment_start_index: int = 1,          # experiments numbered 1..N
+    concentration_key: str = "concentration",  # <-- which global key carries conc (M)
     fixed_equivalents_for_catalog: Optional[Dict[str, float]] = None,  # Non-SM and not in any group in hci
     default_catalog_equivalents: Optional[float] = None,
 ) -> None:
@@ -131,13 +131,8 @@ def write_synthesis_json(
     """
     # Determine moles of limiting reagent
     moles_lim: Optional[float] = None
-    lim_basis = None
-    if limiting_moles is not None:
-        moles_lim = float(limiting_moles)
-        lim_basis = "moles"
-    elif limiting_conc is not None and well_volume_uL is not None:
-        moles_lim = float(limiting_conc) * (float(well_volume_uL) * 1e-6)  # mol/L * L
-        lim_basis = "concentration"
+    lim_basis = "moles" if limiting_moles is not None else "concentration-per-well"
+
 
     # Plate layout (info only)
     rows, cols = _plate_dims(plate_size)
@@ -155,6 +150,20 @@ def write_synthesis_json(
         well_label = well_labels[i] if i < len(well_labels) else None
 
         dispenses = []
+
+        if limiting_moles is not None:
+            moles_lim_this = float(limiting_moles)
+        else:
+            conc = sel.get("globals", {}).get(concentration_key, None)  # expected in M
+            if conc is not None and well_volume_uL is not None:
+                moles_lim_this = float(conc) * (float(well_volume_uL) * 1e-6)  # mol/L * L
+            else:
+                moles_lim_this = None  # quantities that depend on moles may be partial
+
+            # cache non-group catalog on first iteration
+        if i == 0:
+            non_group_catalog = _non_group_catalog_chemicals(opt_spec)
+
         for gname, gsel in sel.get("groups", {}).items():
             member = gsel.get("member")
             eq = gsel.get("equivalents")
@@ -169,8 +178,8 @@ def write_synthesis_json(
             notes = []
             moles = mass_mg = vol_uL = None
 
-            if eq is not None and moles_lim is not None:
-                moles = float(eq) * moles_lim
+            if eq is not None and moles_lim_this is not None:
+                moles = float(eq) * moles_lim_this
             elif eq is not None:
                 notes.append("equivalents provided but limiting moles unknown")
 
@@ -225,14 +234,14 @@ def write_synthesis_json(
             notes = []
             moles = mass_mg = vol_uL = None
 
-            if eq is not None and moles_lim is not None:
-                moles = float(eq) * moles_lim
+            if eq is not None and moles_lim_this is not None:
+                moles = float(eq) * moles_lim_this
             elif eq is not None:
                 notes.append("equivalents provided but limiting moles unknown")
-            elif limiting_name and cat_name == limiting_name and moles_lim is not None:
+            elif limiting_name and cat_name == limiting_name and moles_lim_this is not None:
                 # limiting reagent with implicit 1.0 eq
                 eq = 1.0
-                moles = 1.0 * moles_lim
+                moles = 1.0 * moles_lim_this
             else:
                 notes.append("no equivalents specified; skipping quantity computation")
 
@@ -278,8 +287,9 @@ def write_synthesis_json(
             "limiting": {
                 "name": limiting_name,
                 "basis": lim_basis,
-                "moles_per_well": moles_lim,
-                "well_volume_uL": well_volume_uL
+                "moles_per_well": limiting_moles, # Only relevant if lim_basis is "moles"
+                "well_volume_uL": well_volume_uL,
+                "concentration_key": concentration_key,
             }
         },
         "experiments": experiments

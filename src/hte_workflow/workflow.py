@@ -14,11 +14,15 @@ from typing import Optional, Tuple, List, Any, Dict
 import pandas as pd
 
 from pathlib import Path
+
+from sympy.simplify.radsimp import expand_numer
+
 from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
 import argparse
 
-from hte_workflow import hte_calculator, reaction_analyser, workflow_checker
+from hte_workflow import hte_calculator, reaction_analyser
 from json_handling.hci_file_creator import build_chemical_space_from_spec, load_library
+from json_handling.library_and_hci_adapter import hci_to_optimizer_dict
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +39,12 @@ def _rename(src: str, dst: str) -> Optional[str]:
 def _ask(prompt: str, default: Optional[str] = None) -> str:
     sfx = f" [{default}]" if default is not None else ""
     val = input(f"{prompt}{sfx}: ").strip()
+
+    if prompt == "Campaign name":
+        # Ensure campaign name is not empty
+        if not val:
+            raise ValueError("Give a campaign name you fool!")
+
     return default if (val == "" and default is not None) else val
 
 def _ask_float(prompt: str, default: Optional[float] = None) -> Optional[float]:
@@ -56,11 +66,11 @@ def _ask_yesno(prompt: str, default: bool = True) -> bool:
         print("Please answer y/n.")
 
 def _ask_range(name: str, unit_default: str = "", step_optional: bool = True) -> Optional[Dict[str, Any]]:
-    if not _ask_yesno(f"Add global range for '{name}'?", False):
+    if not _ask_yesno(f"Add global range for '{name}'?", True):
         return None
     r: Dict[str, Any] = {}
-    r["min"]  = _ask_float(f"  {name} min", 0.0)
-    r["max"]  = _ask_float(f"  {name} max", 1.0)
+    r["min"]  = _ask_float(f"  {name} min")
+    r["max"]  = _ask_float(f"  {name} max")
     r["unit"] = _ask(f"  {name} unit", unit_default)
     if not step_optional or _ask_yesno("  Add step?", False):
         step = _ask_float("  step", None)
@@ -73,7 +83,7 @@ def _ask_group_metadata() -> Optional[Dict[str, Any]]:
     if not _ask_yesno("Add a group (e.g., catalyst/solvent/base)?", True):
         return None
     g: Dict[str, Any] = {}
-    g["groupName"] = _ask("  Group name", "catalyst")
+    g["groupName"] = _ask("  Group name", "e.g. catalyst")
     g["description"] = _ask("  Description", "")
     g["selectionMode"] = _ask("  Selection mode [one-of/any/at-least-one]", "one-of")
 
@@ -159,7 +169,7 @@ def interactive_create_hci(*, library_path: str | Path, out_dir: str | Path) -> 
 
     # ---- campaign meta
     print("\n=== Campaign metadata ===")
-    campaignName  = _ask("Campaign name", "Give a name please you fool!")
+    campaignName  = _ask("Campaign name")
     description   = _ask("Description", "")
     objective_txt = _ask("Objective (free text)", "")
     campaignClass = _ask("Campaign class", "Standard Research")
@@ -174,7 +184,8 @@ def interactive_create_hci(*, library_path: str | Path, out_dir: str | Path) -> 
         "reactionType": _ask("  reactionType", ""),
         "reactionName": _ask("  reactionName", ""),
         "optimizationType": _ask("  optimizationType", ""),
-        "link": _ask("  link", "")
+        "link": _ask("  link", ""),
+        "plate_size": int(_ask_float("  plate size (e.g. 48)", 48.0)),
     }
 
     # Objective block
@@ -250,7 +261,62 @@ def interactive_create_hci(*, library_path: str | Path, out_dir: str | Path) -> 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(hci_json, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nWrote HCI file to: {out_path.resolve()}")
-    return out_path
+    return out_path, campaignName, hasBatch["batchID"]
+
+#-- -------------------------------------------------------------------------
+# Run the BO script
+# ---------------------------------------------------------------------------
+def run_bo_script(prefix: str, hci_file: str, limiting: str, well_volume_ul: float,
+                  data_dir: Path, out_dir: Path, results: Optional[Path],
+                  descriptors = True, fix_plate_temp = True) -> str:
+    """
+    Run the Bayesian optimization script with the given HCI file and directories.
+    :param hci_file:
+    :param data_dir:
+    :param out_dir:
+    :return:
+    """
+    hci_path = hci_file
+
+    synthesis_file = str(f"{prefix}_synthesis.json")
+
+    if not results:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "hte_workflow.bo_runner",
+                "--hci-file", str(hci_path),
+                "--out", synthesis_file,
+                "--limiting-name", limiting,
+                "--well-volume-uL", str(well_volume_ul),
+                "--use-descriptors", str(descriptors),
+                "--fix-plate-temp", str(fix_plate_temp),
+                "--data-dir", str(data_dir),
+                "--out-dir", str(out_dir),
+            ],
+            check=True,
+        )
+    else:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "hte_workflow.bo_runner",
+                "--hci-file", str(hci_path),
+                "--results", str(results),
+                "--out", synthesis_file,
+                "--limiting-name", limiting,
+                "--well-volume-ul", str(well_volume_ul),
+                "--use-descriptors", str(descriptors),
+                "--fix-plate-temp", str(fix_plate_temp),
+                "--data-dir", str(data_dir),
+                "--out-dir", str(out_dir),
+            ],
+            check=True,
+        )
+
+    return synthesis_file
 
 # ---------------------------------------------------------------------------
 # Step 1: HTE calculator
@@ -462,38 +528,68 @@ def main() -> None:
         lib_path = input("Library path: ").strip()
     else:
         lib_path = args.library_path
-    library_path = str(data_dir/Path(lib_path).resolve())
+    library_path = str(data_dir/lib_path)
     if not os.path.exists(library_path):
         print(f"Library file {library_path} does not exist.")
         sys.exit(1)
 
     if not args.hci_file:
-        hci_file_path = interactive_create_hci(library_path=library_path, out_dir=out_dir)
+        hci_file_path, exp_name, exp_number = interactive_create_hci(library_path=library_path, out_dir=out_dir)
     else:
-        hci_file_path = str(out_dir/Path(args.hci_file).resolve())
+        hci_file_path = str(out_dir/args.hci_file)
         if not os.path.exists(hci_file_path):
             print(f"HCI file {hci_file_path} does not exist.")
             sys.exit(1)
 
-    if args.BO:
-        # Placeholder for Bayesian optimization logic
-        print("Bayesian optimization mode is not implemented yet.")
-        sys.exit(1)
+        hci_doc = hci_to_optimizer_dict(hci_file_path)
+        exp_name = hci_doc.get("metadata").get("campaignName")
+        exp_number = hci_doc.get("metadata").get("batch", {}).get("batchID")
 
-    exp_name = input("Experiment name: ").strip()
-    exp_number = input("Experiment number: ").strip()
-    limiting = input("Limiting reagent name: ").strip()  # Needs to be parsed directly from calculator
+    limiting = input("Limiting reagent name: ").strip()
     date_str = datetime.date.today().strftime("%Y%m%d")
     prefix = f"{date_str}_{exp_name}_{exp_number}"
+    well_volume_ul = _ask_float("Well volume in microliters (default 500.0)", 500.0)
 
-    preload = input("Preloaded reagents file (blank if none): ").strip() or None
+    if args.BO:
+        print("Bayesian optimization is running. ")
+        synthesis_file = run_bo_script(
+            prefix=prefix,
+            hci_file=hci_file_path,
+            limiting=limiting,
+            well_volume_ul=well_volume_ul,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            results=args.synth_file,
+            descriptors=True,
+        )
+    elif args.synth_file:
+        synthesis_file = str(args.synth_file)
+    else:
+        synthesis_file = None
 
-    calculator_file = run_hte_calculator(prefix, preload, data_dir, out_dir)
+    """
+    Need to implement generic workflow steps into synthesis file here (transport, washing, internal standard
+    etc.
+    Done by default value or by asking the user.
+    If synthesis file is provided, it will be used to run the calculator.
+    """
+
+    if not synthesis_file:
+        preload = input("Preloaded reagents file (blank if none): ").strip() or None
+
+        calculator_file = run_hte_calculator(prefix, preload, data_dir, out_dir)
+    else:
+        # This doesn't work yet, as the calculator expects a different format
+        # and the synthesis file is not in the expected format.
+        # Coming soon
+        calculator_file = run_hte_calculator(prefix, synthesis_file, data_dir, out_dir)
 
     print(f"Reagents calculated and saved to {calculator_file}.")
     input("Prepare the digital twin and download the workflow template. Press Enter to continue...")
 
+    # ideally be avoided by directly starting Lucas' file and running the excel
     workflow_file = run_workflow_checker(prefix, calculator_file, data_dir, out_dir)
+
 
     print("Check if the experiment setup is correct.")
     print("Upload the workflow file to Arcsuite and run the reaction.")

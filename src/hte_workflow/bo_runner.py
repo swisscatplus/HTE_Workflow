@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union, Optional
+import random
 
 import argparse
 import math
@@ -25,6 +26,7 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 
 from json_handling.library_and_hci_adapter import hci_to_optimizer_dict
 from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
+from hte_workflow.descriptor_encoder import DescriptorSpaceEncoderAuto
 
 
 # ---------------------------
@@ -36,6 +38,121 @@ def _load_json(p: Union[str, Path]) -> Any:
 
 def _save_json(obj: Any, p: Union[str, Path]) -> None:
     Path(p).write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+
+#----------------------------
+# Fix temperature per plate
+#----------------------------
+
+def _find_param_index_numeric_auto(encoder: DescriptorSpaceEncoderAuto, param_name: str) -> int:
+    """
+    Return the column index of the numeric parameter 'param_name' in the encoder's
+    concatenated tensor space. Handles DescriptorSpaceEncoderAuto blocks:
+      - cat blocks: one-hot (k dims) + optional descriptor dims (len(desc_keys))
+      - num blocks: 1 dim each
+    """
+    i = 0
+    for name, kind, meta in encoder.blocks:
+        if kind == "cat":
+            i += int(meta.get("k", 0))
+            # descriptors added after one-hot for this categorical group
+            i += len(meta.get("desc_keys", []))
+        else:  # numeric
+            if name == param_name:
+                return i
+            i += 1
+    raise ValueError(f"Numeric parameter not found in encoder: {param_name}")
+
+def _temperature_range_from_spec(opt_spec: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Return {'min':..., 'max':..., 'unit':...} for temperature, from optimizer dict or HCI."""
+    rng = (opt_spec.get("globals") or {}).get("temperature")
+    if rng is None:
+        c = opt_spec.get("hasCampaign", {})
+        rng = (c.get("hasRanges") or {}).get("temperature")
+    if not rng:
+        return None
+    return {"min": float(rng["min"]), "max": float(rng["max"]), "unit": rng.get("unit", "C")}
+
+def _temperature_candidates(rng: Dict[str, float], how: str = "grid", k: int = 7) -> List[float]:
+    lo, hi = float(rng["min"]), float(rng["max"])
+    if how == "grid":
+        if k < 2:
+            return [(lo + hi) / 2.0]
+        step = (hi - lo) / (k - 1)
+        return [lo + i * step for i in range(k)]
+    # random
+    random.seed(123)
+    return [random.uniform(lo, hi) for _ in range(k)]
+
+
+def _optimize_batch_with_fixed_numeric(acq_function, encoder, q: int, fixed_index: int, fixed_value_01: float):
+    """
+    Optimize acquisition with one coordinate fixed in [0,1] across the q-batch.
+    """
+    lb, ub = encoder.bounds()
+    candidates, best_val = optimize_acqf(
+        acq_function=acq_function,
+        bounds=torch.stack((lb, ub)),
+        q=q,
+        num_restarts=10,
+        raw_samples=256,
+        fixed_features={fixed_index: float(fixed_value_01)},
+        options={"batch_limit": 5, "maxiter": 200},
+    )
+    return candidates.detach(), float(best_val.detach().item()) if torch.is_tensor(best_val) else float(best_val)
+
+def propose_plate_with_temperature_BO_auto(
+    encoder: DescriptorSpaceEncoderAuto,
+    parameters_all: List[Dict[str, Any]],
+    results: List[Dict[str, Any]],
+    q: int,
+    temp_range: Dict[str, float],
+    temp_param_name: str = "global:temperature",
+    use_noisy_ei: bool = True,
+):
+    """
+    Scan candidate temperatures; for each, optimize q-batch with the temperature coordinate fixed.
+    Choose the temperature that yields the highest acquisition value.
+    Returns (best_T, candidates_tensor).
+    """
+    # Build training data on *full* space (includes temperature)
+    X_train, y_train = build_training_tensors(encoder, results, parameters_all)
+
+    # No data yet: Sobol init, force mid temperature
+    if X_train is None:
+        sobol = torch.quasirandom.SobolEngine(dimension=encoder.dim, scramble=True, seed=123)
+        Xq = sobol.draw(q).to(torch.double)
+        t_idx = _find_param_index_numeric_auto(encoder, temp_param_name)
+        T01 = 0.5
+        Xq[:, t_idx] = T01
+        lo, hi = float(temp_range["min"]), float(temp_range["max"])
+        T_physical = lo + T01 * (hi - lo)
+        return T_physical, Xq
+
+    # Fit GP
+    gp = SingleTaskGP(X_train, y_train)
+    mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
+    fit_gpytorch_mll(mll)
+    if use_noisy_ei:
+        acq = qNoisyExpectedImprovement(model=gp, X_baseline=X_train, sampler=SobolQMCNormalSampler(128))
+    else:
+        acq = qExpectedImprovement(model=gp, best_f=y_train.max(), sampler=SobolQMCNormalSampler(128))
+
+    # Fixed coordinate index for temperature
+    t_idx = _find_param_index_numeric_auto(encoder, temp_param_name)
+    lo, hi = float(temp_range["min"]), float(temp_range["max"])
+
+    best_val = -1e18
+    best_T = None
+    best_cand = None
+
+    for T in _temperature_candidates(temp_range, how="grid", k=7):  # 7 candidates defined by k
+        T01 = (T - lo) / (hi - lo) if hi > lo else 0.0
+        cand, val = _optimize_batch_with_fixed_numeric(acq, encoder, q=q, fixed_index=t_idx, fixed_value_01=T01)
+        if val > best_val:
+            best_val, best_T, best_cand = val, T, cand
+
+    return best_T, best_cand
+
 
 # ---------------------------
 # Encoding / decoding of parameters
@@ -226,14 +343,15 @@ def selections_from_configs(opt_spec: Dict[str, Any], configs: List[Dict[str, An
 
 def main():
     ap = argparse.ArgumentParser(description="Run BoTorch BO on optimizer dict and emit synthesis.json")
-    ap.add_argument("--hci_file", required=True, help="HCI File")
+    ap.add_argument("--hci-file", required=True, help="HCI File")
     ap.add_argument("--results", help="Past results JSON (list of {params, objective})")
     ap.add_argument("--out", required=True, help="Path to synthesis.json (will be written by synthesis_writer)")
     # Optional chemistry context for quantity computation in writer
     ap.add_argument("--limiting-name", help="Name of limiting chemical (matching a group member's chemicalName)")
     ap.add_argument("--limiting-moles", type=float, help="Moles of limiting reagent per well (e.g., 2e-6)")
-    ap.add_argument("--limiting-conc", type=float, help="If given (M), combined with --well-volume-uL to compute moles")
     ap.add_argument("--well-volume-uL", type=float, help="Total volume per well (µL) for concentration-based dosing")
+    ap.add_argument("--use-descriptors", default = True, help="Use descriptors in encoding (default: True)")
+    ap.add_argument("--fix-plate-temperature", default = True)
 
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     ap.add_argument("--data-dir", default=str(DATA_DIR), help="Directory with data files for layout_parser")
@@ -250,25 +368,51 @@ def main():
     past = _load_json(args.results) if args.results else []
 
     parameters = opt_spec["parameters"]
-    encoder = SpaceEncoder(parameters)
 
-    # Propose q = plate-size
-    Xq = propose_batch(encoder, parameters, past, q=plate_size, use_noisy_ei=True)
+    if args.use_descriptors:
+        # Use descriptor encoder
+        encoder = DescriptorSpaceEncoderAuto(parameters, opt_spec)
+    else:
+        encoder = SpaceEncoder(parameters)
+
+    temp_rng = _temperature_range_from_spec(opt_spec)
+    if temp_rng is None:
+        raise SystemExit("No temperature range found (hasRanges.temperature).")
+
+    if args.fix_plate_temperature:
+        best_T, Xq = propose_plate_with_temperature_BO_auto(
+            encoder=encoder,
+            parameters_all=opt_spec["parameters"],
+            results=past,  # your prior results (can be empty)
+            q=plate_size,
+            temp_range=temp_rng,
+            temp_param_name="global:temperature",
+            use_noisy_ei=True,
+        )
+    else:
+        # Propose q = plate-size
+        best_T = None
+        Xq = propose_batch(encoder, parameters, past, q=plate_size, use_noisy_ei=True)
+
     cfgs = [encoder.decode_one(Xq[i]) for i in range(Xq.shape[0])]
 
     # Convert to selections (groups/globals)
     sels = selections_from_configs(opt_spec, cfgs)
+
+    if best_T is not None:
+        for s in sels:
+            s.setdefault("globals", {})
+            s["globals"]["temperature"] = best_T
 
     # Hand off to writer
     from json_handling.synthesis_writer import write_synthesis_json
     write_synthesis_json(
         opt_spec=opt_spec,
         selections=sels,
-        out_path=args.out,
+        out_path=str(out_dir/args.out),
         plate_size=plate_size,
         limiting_name=args.limiting_name,
         limiting_moles=args.limiting_moles,
-        limiting_conc=args.limiting_conc,
         well_volume_uL=args.well_volume_uL,
     )
     print(f"Wrote {args.out}")
