@@ -238,75 +238,133 @@ def build_selections_from_interactive(
     hci_groups: List[Dict],          # from HCI: hasGroups
 ) -> List[Dict[str, Any]]:
     """
-    Create the 'selections' array expected by synthesis_writer:
-    [
-      {
-        "groups": {
-          "<groupName>": {"member": "<chemicalName>", "equivalents": <float>},
-          ...
-        },
-        "globals": {"concentration": <M>, "temperature": <C>, "time": <min>}
-      },
-      ...
-    ]
-    Rules:
-      - if a reagent’s location matrix includes the well, and that reagent’s name is
-        a member of group <g>, add it as the member for that group (one member per group).
-      - solvent group: will be handled by synthesis_writer (residual volume).
+    Build 'selections' for synthesis_writer with BOTH reagents and solvents.
+    Reagents: chosen by presence in well & membership in their HCI group.
+    Solvent group (if present in HCI): chosen by Solvent.locations for that well.
     """
-    # Index group membership from HCI once
-    group_to_members = {}
+    # Normalize column dtypes once (so .loc[row_letter, col_number] works)
+    try:
+        conc_limiting_df.columns = conc_limiting_df.columns.astype(int)
+    except Exception:
+        pass
+    for r in reagents:
+        if not getattr(r, "locations", pd.DataFrame()).empty:
+            try:
+                r.locations.columns = r.locations.columns.astype(int)
+            except Exception:
+                pass
+    for s in solvents:
+        if not getattr(s, "locations", pd.DataFrame()).empty:
+            try:
+                s.locations.columns = s.locations.columns.astype(int)
+            except Exception:
+                pass
+
+    # Index HCI group memberships
+    group_to_members: Dict[str, set] = {}
+    lower_to_actual_name: Dict[str, str] = {}
     for g in hci_groups or []:
-        gname = g.get("groupName") or g.get("name")
+        gname = (g.get("groupName") or g.get("name") or "").strip()
         if not gname:
             continue
+        lower_to_actual_name[gname.lower()] = gname
         members = []
-        for m in g.get("members", []):
+        for m in g.get("members", []) or []:
             ref = m.get("reference") or {}
             nm = ref.get("chemicalName")
             if nm:
                 members.append(nm)
         group_to_members[gname] = set(members)
 
-    # Quick lookup reagent by name
+    # Detect the actual "solvent" group name in HCI, if present
+    solvent_group_name: Optional[str] = None
+    if "solvent" in lower_to_actual_name:
+        solvent_group_name = lower_to_actual_name["solvent"]
+
+    # Quick lookups
     reag_by_name = {r.name: r for r in reagents}
+    solvent_names = {s.name for s in solvents}
 
     selections: List[Dict[str, Any]] = []
 
-    for r_idx, c_idx, _label in _iter_wells(rows, cols):
-        # Per-well globals
-        conc_here = float(conc_limiting_df.iloc[r_idx, c_idx]) if not conc_limiting_df.empty else None
-        globals_block: Dict[str, Any] = {}
-        if conc_here is not None:
-            globals_block["concentration"] = conc_here
-        if temperature_plate is not None:
-            globals_block["temperature"] = float(temperature_plate)
-        if time_plate is not None:
-            globals_block["time"] = float(time_plate)
+    warned_multi_solvent = False  # print this warning only once
 
-        groups_block: Dict[str, Dict[str, Any]] = {}
+    for r_idx in range(rows):
+        row_letter = string.ascii_uppercase[r_idx]
+        for c_idx in range(1, cols + 1):
+            col_label = c_idx
 
-        # For each HCI group, see if exactly one of its members is placed in this well
-        for gname, member_names in group_to_members.items():
-            chosen_name: Optional[str] = None
-            chosen_eq: Optional[float] = None
+            # Per-well globals
+            globals_block: Dict[str, Any] = {}
+            if not conc_limiting_df.empty:
+                try:
+                    conc_here = float(conc_limiting_df.loc[row_letter, col_label])
+                    globals_block["concentration"] = conc_here
+                except KeyError:
+                    pass
+            if temperature_plate is not None:
+                globals_block["temperature"] = float(temperature_plate)
+            if time_plate is not None:
+                globals_block["time"] = float(time_plate)
 
-            # check if any reagent with name in member_names is located here
-            for nm in member_names:
-                r = reag_by_name.get(nm)
-                if r is None or r.locations.empty:
+            groups_block: Dict[str, Dict[str, Any]] = {}
+
+            # Reagent-driven group membership (one member per group)
+            for gname, member_names in group_to_members.items():
+                if gname == solvent_group_name:
+                    # handle solvent group separately below
                     continue
-                if bool(r.locations.iloc[r_idx, c_idx]):
-                    chosen_name = r.name
-                    chosen_eq = r.equivalents
-                    break  # first match wins (one member per group)
 
-            if chosen_name is not None:
-                groups_block[gname] = {"member": chosen_name}
-                if chosen_eq is not None:
-                    groups_block[gname]["equivalents"] = float(chosen_eq)
+                chosen_name: Optional[str] = None
+                chosen_eq: Optional[float] = None
 
-        selections.append({"groups": groups_block, "globals": globals_block})
+                for nm in member_names:
+                    r = reag_by_name.get(nm)
+                    if r is None or r.locations.empty:
+                        continue
+                    try:
+                        if bool(r.locations.loc[row_letter, col_label]):
+                            chosen_name = r.name
+                            chosen_eq = r.equivalents
+                            break
+                    except KeyError:
+                        continue
+
+                if chosen_name is not None:
+                    entry = {"member": chosen_name}
+                    if chosen_eq is not None:
+                        entry["equivalents"] = float(chosen_eq)
+                    groups_block[gname] = entry
+
+            # Solvent group selection (if present in HCI)
+            if solvent_group_name:
+                # Which placed solvents are in this well?
+                placed_here: List[str] = []
+                for s in solvents:
+                    if s.locations.empty:
+                        continue
+                    try:
+                        if bool(s.locations.loc[row_letter, col_label]):
+                            placed_here.append(s.name)
+                    except KeyError:
+                        continue
+
+                # Filter to those that are valid members of the solvent group
+                valid_members = group_to_members.get(solvent_group_name, set())
+                candidates = sorted([nm for nm in placed_here if nm in valid_members])
+
+                if len(candidates) == 1:
+                    groups_block[solvent_group_name] = {"member": candidates[0]}
+                elif len(candidates) > 1:
+                    # pick deterministically (alphabetical) and warn once
+                    if not warned_multi_solvent:
+                        print("Warning: multiple solvents placed in some wells; "
+                              f"choosing the first alphabetically for group '{solvent_group_name}'.")
+                        warned_multi_solvent = True
+                    groups_block[solvent_group_name] = {"member": candidates[0]}
+                # else: no solvent placed here (or not in group) → leave unset for this well
+
+            selections.append({"groups": groups_block, "globals": globals_block})
 
     return selections
 
@@ -735,6 +793,8 @@ def main() -> None:
 
     reagents: List[Reagent] = []
     solvents: List[Solvent] = []
+    reagents_hci: List[Reagent] = []
+    solvents_hci: List[Solvent] = []
     stock_solutions: List[Stock_Solution] = []
     hci_catalog: dict[str, dict] = {}
 
@@ -745,8 +805,8 @@ def main() -> None:
         try:
             hci_path = str(out_dir / args.hci)
             pre_r, pre_s = preload_from_hci(Path(hci_path), plate)
-            reagents.extend(pre_r)
-            solvents.extend(pre_s)
+            reagents_hci.extend(pre_r)
+            solvents_hci.extend(pre_s)
             if reagents or solvents:
                 print(
                     f"Preloaded from HCI: {len(reagents)} reagents, {len(solvents)} solvents (you can edit/confirm in prompts).")
@@ -786,7 +846,8 @@ def main() -> None:
 
             default_inchi = ref.get("Inchi") or None
             if default_inchi is not None:
-                default_inchikey = inchi.InchiToInchiKey(default_inchi)
+                rdkit_inchi = f"InChI={default_inchi}"
+                default_inchikey = inchi.InchiToInchiKey(rdkit_inchi)
             else:
                 default_inchikey = ""
 
@@ -982,7 +1043,6 @@ def main() -> None:
                 stock_solutions.append(new_stock_solution)
                 results[f"{new_stock_solution.name} (uL)"] = stock_solution_dispensed
                 totals[f"{new_stock_solution.name} {new_stock_solution.concentration} M (uL)"] = stock_solution_dispensed.sum().sum()
-
     if solvents:
         # Allocate the remaining volume to each solvent according to its
         # location mask without averaging across solvents
@@ -1033,7 +1093,7 @@ def main() -> None:
               f"(synthesis_writer expects a constant per-well volume).")
 
     # Load HCI (required on this path), convert to optimizer dict for writer
-    hci_path = Path(args.hci) if args.hci else None
+    hci_path = Path(str(out_dir / args.hci)) if args.hci else None
     if not hci_path or not hci_path.exists():
         raise SystemExit("HCI file (--hci) is required when --synthesis is not provided.")
 
