@@ -2,6 +2,7 @@
 
 <p align="center">
   <img src="logo_Scat.png" alt="SwissCat+ EPFL" width="150"/>
+  <img src="BO_loop.png" alt="BO Loop" width="250"/>
 </p>
 
 This repository contains a Python script for calculating reagent and solvent amounts for high-throughput experimentation (HTE) reactions. The script guides the user through entering reagents, specifying dispensing locations on a plate, and calculating masses or volumes required in each well.
@@ -18,6 +19,7 @@ process end-to-end.
 - openpyxl
 - matplotlib
 - scipy
+- and some others I'm afraid I forgot to list here.
 
 Install dependencies with:
 
@@ -27,24 +29,62 @@ pip install -r requirements.txt
 
 ## Quick Start – full automated workflow
 
-`HTE_Workflow.py` ties together calculation, workflow validation and
-post‑reaction analysis.  It applies the naming scheme
+<p align="center">
+  <img src="Files_overview_controller.png" alt="Controller Overview" width="550"/>
+</p>
+
+`Workflow.py` ties together calculation, workflow validation,
+post‑reaction analysis and Bayesian optimisation.  It applies the naming scheme
 `date_experimentname_experimentnumber_content` to every generated file.
 
 ```bash
-python HTE_Workflow.py
+python -m hte_workflow.workflow -- library-path library.json [--BO True/False] [--hci-file hci_file.json]
+[--synth-file synth_file.json] [--data-dir custom data directory] [--out-dir custom output directory]
 ```
 
 The script will:
 
-1. run `hte_calculator.py` to gather reagents (from a preload file or by
-   interactive input) and produce an `actual_*.xlsx` layout
-2. call `workflow_checker.py --fill --visualize` to insert the calculated
+1. Load the library of reagents from `library.json`.
+2. Define an HCI file if not given (chemical space than can be explored).
+3. a) Run a bayesian optimisation (BO) loop if `--BO True` is set 
+      and generate a synth.json file, or
+   b) Manually specify a synth.json file with the desired conditions
+4. Run `hte_calculator.py` to visualize the conditions and generate an Excel file
+   with the calculated amounts for each well.
+5. Call `workflow_checker.py --fill --visualize` to insert the calculated
    volumes into the workflow and create layout images
-3. execute `reaction_analyser.py`, which in turn runs `analysis.py` and
+6. Execute `reaction_analyser.py`, which in turn runs `analysis.py` and
    `dispense_analyser.py`, normalizes yields against the limiting reagent
    and saves heatmaps and pie plots
-4. return the parsed yield data for further processing
+7. a) Run the next Bayesian loop if `--BO True` is set, or
+   b) Return the parsed yield data for further processing
+
+## Library file handling
+
+### Initiate an empy library file
+```bash
+python -m json_handling.library_and_hci_adapter --init --out name.json --creator "Your name"
+--LibraryID "Unique ID" 
+```
+
+### Add reagents to the library file
+```bash
+python -m json_handling.library_and_hci_adapter --add --lib name.json --name "Reagent Name"
+--cas "cas number" --mw "molecular weight [g/mol]" --smiles "smiles" --inchi "inchi"
+--formula "molecular formula" --swisscatnumber "unique Swiss Cat + ID" --physicalstate "solid, liquid or solution"
+[--density "density [g/mL]"] [--concentration "concentration [mol/L"]
+```
+
+### List library contents
+```bash
+python -m json_handling.library_and_hci_adapter --list --lib name.json
+```
+
+### Show specific reagent
+```bash
+python -m json_handling.library_and_hci_adapter --show --lib name.json --name "Reagent Name"
+```
+
 
 ## Manual script usage
 
