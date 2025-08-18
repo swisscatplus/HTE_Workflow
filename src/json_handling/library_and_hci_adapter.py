@@ -275,7 +275,7 @@ def hci_to_optimizer_dict(hci: Union[str, Path, Dict[str, Any]]) -> Dict[str, An
     }
     """
     doc = hci if isinstance(hci, dict) else _load_json(hci)
-    c = doc.get("hasCampaign", {})
+    c = doc.get("hasCampaign")
 
     # Metadata
     metadata = {
@@ -297,7 +297,7 @@ def hci_to_optimizer_dict(hci: Union[str, Path, Dict[str, Any]]) -> Dict[str, An
     # Chemicals catalog (flatten references, keep by ID or Name as key)
     catalog: Dict[str, Any] = {}
     for ch in (c.get("hasChemical") or []):
-        key = ch.get("chemicalID") or ch.get("chemicalName")
+        key = ch.get("chemicalName")
         catalog[str(key)] = ch
 
     # Groups
@@ -315,9 +315,9 @@ def hci_to_optimizer_dict(hci: Union[str, Path, Dict[str, Any]]) -> Dict[str, An
         choices = []
         for m in members_in:
             ref = m.get("reference") or {}
-            cid = ref.get("chemicalID") or ref.get("chemicalName")
-            name = ref.get("chemicalName") or str(cid)
-            desc = ref.get("descriptors")  # may be absent
+            cid = ref.get("chemicalID")
+            name = ref.get("chemicalName")
+            desc = ref.get("descriptors")  or None
             members_out.append({
                 "id": str(cid),
                 "name": name,
