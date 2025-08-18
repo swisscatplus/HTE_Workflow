@@ -198,7 +198,7 @@ class Plate:
         print("  [r] per row")
         print("  [C] per column")
         print("  [w] per well")
-        choice = input("Choice: ").strip().lower()
+        choice = input(f"Choice for {label}: ").strip().lower()
         df = pd.DataFrame(0.0, index=self.template.index, columns=self.template.columns)
         if choice == 'c':
             val = float(input(f"Enter {label}: "))

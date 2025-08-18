@@ -332,7 +332,8 @@ def run_bo_script(prefix: str, hci_file: str, limiting: str, well_volume_ul: flo
 
 def run_hte_calculator(prefix: str, data_dir: Path, out_dir: Path,
                         preload: Optional[str] = None, synthesis: Optional[str] = None,
-                       hci: Optional[str]= None) -> str:
+                       hci: Optional[str]= None,
+                       well_volume: Optional[float] = None) -> str:
     """Run ``hte_calculator`` and return the path to the generated Excel file."""
     output_file = f"{prefix}_calculator.xlsx"
 
@@ -370,6 +371,12 @@ def run_hte_calculator(prefix: str, data_dir: Path, out_dir: Path,
             # No need to add more as autofilled correctly
             (re.compile(r"^Reagent name", re.I), lambda: ""),
             (re.compile(r"^Add more reagents/solvents", re.I), lambda: "N"),
+        ])
+
+    if hci and well_volume:
+        AUTO_ANSWERS.extend(
+            [(re.compile(r"^Choice for final volume per well \(uL\):\s", re.I), lambda: "c"),
+             (re.compile(r"^Enter final volume per well", re.I), lambda:str(well_volume)),
         ])
 
     builtin_input = builtins.input
@@ -595,7 +602,7 @@ def main() -> None:
     elif synthesis_file:
         calculator_file = run_hte_calculator(prefix, data_dir, out_dir, synthesis=synthesis_file, hci=str(args.hci_file))
     else:
-        calculator_file = run_hte_calculator(prefix, data_dir, out_dir, hci=str(args.hci_file))
+        calculator_file = run_hte_calculator(prefix, data_dir, out_dir, hci=str(args.hci_file), well_volume = well_volume_ul)
 
     print(f"Reagents calculated and saved to {calculator_file}.")
     input("Prepare the digital twin and download the workflow template. Press Enter to continue...")
