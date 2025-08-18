@@ -571,56 +571,68 @@ def main() -> None:
     prefix = f"{date_str}_{exp_name}_{exp_number}"
     well_volume_ul = _ask_float("Well volume in microliters (default 500.0)", 500.0)
 
-    if args.BO == "True":
-        print("Bayesian optimization is running. ")
-        synthesis_file = run_bo_script(
-            prefix=prefix,
-            hci_file=hci_file_path,
-            limiting=limiting,
-            well_volume_ul=well_volume_ul,
-            data_dir=data_dir,
-            out_dir=out_dir,
-            results=args.synth_file,
-            descriptors=True,
-        )
-    elif args.synth_file:
-        synthesis_file = str(args.synth_file)
-    else:
-        synthesis_file = None
+    bayesian_iteration = 1
+    max_bayesian_iterations = 1  # Set a maximum number of iterations for Bayesian optimization
+    while True: #  Loop for several plates via Bayesian
+        if args.BO == "True":
+            print("Bayesian optimization is running. ")
+            synthesis_file = run_bo_script(
+                prefix=prefix,
+                hci_file=hci_file_path,
+                limiting=limiting,
+                well_volume_ul=well_volume_ul,
+                data_dir=data_dir,
+                out_dir=out_dir,
+                results=args.synth_file,  # pretty sure this should be the analytical results file
+                descriptors=True,
+            )
+        elif args.synth_file:
+            synthesis_file = str(args.synth_file)
+        else:
+            synthesis_file = None
 
-    """
-    Need to implement generic workflow steps into synthesis file here (transport, washing, internal standard
-    etc.
-    Done by default value or by asking the user.
-    If synthesis file is provided, it will be used to run the calculator.
-    """
+        """
+        Need to implement generic workflow steps into synthesis file here (transport, washing, internal standard
+        etc.
+        Done by default value or by asking the user.
+        If synthesis file is provided, it will be used to run the calculator.
+        """
 
-    if not synthesis_file and not args.hci_file:  # legacy mode
-        preload = input("Preloaded reagents file (blank if none): ").strip() or None
+        if not synthesis_file and not args.hci_file:  # legacy mode
+            preload = input("Preloaded reagents file (blank if none): ").strip() or None
 
-        calculator_file = run_hte_calculator(prefix, data_dir, out_dir, preload=preload)
-    elif synthesis_file:
-        calculator_file = run_hte_calculator(prefix, data_dir, out_dir, synthesis=synthesis_file, hci=str(args.hci_file))
-    else:
-        calculator_file = run_hte_calculator(prefix, data_dir, out_dir, hci=str(args.hci_file), well_volume = well_volume_ul)
+            calculator_file = run_hte_calculator(prefix, data_dir, out_dir, preload=preload)
+        elif synthesis_file:
+            calculator_file = run_hte_calculator(prefix, data_dir, out_dir, synthesis=synthesis_file, hci=str(args.hci_file))
+        else:
+            calculator_file = run_hte_calculator(prefix, data_dir, out_dir, hci=str(args.hci_file), well_volume = well_volume_ul)
 
-    print(f"Reagents calculated and saved to {calculator_file}.")
-    input("Prepare the digital twin and download the workflow template. Press Enter to continue...")
+        print(f"Reagents calculated and saved to {calculator_file}.")
+        print("Executing Lucas' file")
+        # Placeholder for Lucas' file execution
 
-    # ideally be avoided by directly starting Lucas' file and running the excel
-    workflow_file = run_workflow_checker(prefix, calculator_file, data_dir, out_dir)
+        print("Workflow send to ArkSuite.")
+        input("Prepare the digital twin and download the workflow template. Press Enter to continue...")
 
-
-    print("Check if the experiment setup is correct.")
-    print("Upload the workflow file to Arcsuite and run the reaction.")
-    input("Perform the reaction analysis (HPLC) and the calibration. Press Enter to continue to the analysis once finished...")
-
-    analysis_path = run_reaction_analysis(prefix, limiting, calculator_file, data_dir, out_dir)
+        # ideally be avoided by directly starting Lucas' file and running the excel
+        workflow_file = run_workflow_checker(prefix, calculator_file, data_dir, out_dir)
 
 
+        print("Check if the experiment setup is correct.")
+        print("Upload the workflow file to Arcsuite and run the reaction.")
+        input("Perform the reaction analysis (HPLC) and the calibration. Press Enter to continue to the analysis once finished...")
 
-    # Placeholder for forwarding results to external systems
-    # e.g., send ``yields`` to a Bayesian optimizer in future iterations
+        analysis_path = run_reaction_analysis(prefix, limiting, calculator_file, data_dir, out_dir)
+
+
+
+        # Placeholder for forwarding results to external systems
+        # e.g., send ``yields`` to a Bayesian optimizer in future iterations
+        if not args.BO:
+            break
+        elif bayesian_iteration >= max_bayesian_iterations:
+            print("Maximum number of Bayesian iterations reached. Exiting.")
+            break
 
 
 if __name__ == "__main__":
