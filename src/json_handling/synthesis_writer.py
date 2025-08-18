@@ -77,7 +77,6 @@ def _get_float(d: Dict[str, Any], path: List[str]) -> Optional[float]:
 # Core
 # ---------------------------
 
-# ----- replace in synthesis_writer.py -----
 
 def _enumerate_plate(rows: int, cols: int) -> list[str]:
     """A1, A2, ..., B1, ... (column-wise or row-wise if you prefer)."""
@@ -192,7 +191,7 @@ def write_synthesis_json(
             if moles is not None and conc:
                 vol_uL = (moles / conc) * 1e6
             elif mass_mg is not None and dens and phys in {"liquid", "solution"}:
-                vol_uL = (mass_mg / 1e3) / dens * 1e6
+                vol_uL = (mass_mg / 1e3) / dens * 1e3  # convert to µL (used to be * 1e6 causing error; density is g/ml)
             else:
                 if phys in {"liquid", "solution"} and dens is None and conc is None:
                     notes.append("no density/concentration; cannot compute volume")

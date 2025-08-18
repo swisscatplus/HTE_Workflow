@@ -8,12 +8,17 @@ import math
 from pathlib import Path
 from matplotlib.axes import Axes
 
+from rdkit import Chem
+from rdkit.Chem import inchi
+
 import pandas as pd
 import numpy as np
 import requests
 import matplotlib.pyplot as plt
 
 from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
+from json_handling.library_and_hci_adapter import hci_to_optimizer_dict
+from json_handling.synthesis_writer import write_synthesis_json
 
 PUBCHEM_URL = (
     "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{}/property/MolecularWeight/TXT"
@@ -30,6 +35,23 @@ def fetch_molar_mass(inchikey: str) -> float:
     first_line = text.splitlines()[0]
     return float(first_line)
 
+
+def _ask_with_default(prompt: str, default: str | None) -> str:
+    """Prompt once; ENTER keeps the default."""
+    sfx = f" [{default}]" if (default is not None and default != "") else ""
+    val = input(f"{prompt}{sfx}: ").strip()
+    return default if (val == "" and default is not None) else val
+
+def _ask_float_with_default(prompt: str, default: float | None) -> float | None:
+    while True:
+        sfx = f" [{default}]" if default is not None else ""
+        raw = input(f"{prompt}{sfx}: ").strip()
+        if raw == "":
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            print("Please enter a number or press ENTER to keep default.")
 
 def load_preloaded_reagents(path: str, plate: "Plate") -> Tuple[List["Reagent"], List["Solvent"]]:
     """Load reagents from a Python file and return lists of Reagent and Solvent objects."""
@@ -107,8 +129,12 @@ class Reagent:
 
 
     def ensure_molar_mass(self) -> None:
-        if self.molar_mass is None:
+        if self is not None:
+            return
+        if self.inchikey:
             self.molar_mass = fetch_molar_mass(self.inchikey)
+        else:
+            raise ValueError(f"Molar mass unknown for {self.name}")
 
 
 @dataclass
@@ -194,44 +220,168 @@ class Plate:
             print("Invalid choice; defaulting to 0")
         return df
 
+def _iter_wells(rows: int, cols: int):
+    for r in range(rows):
+        row_letter = string.ascii_uppercase[r]
+        for c in range(1, cols + 1):
+            yield r, c, f"{row_letter}{c}"
 
-def visualize_distribution(reagents: List[Reagent], solvents: List[Solvent], plate: Plate, final_volume: pd.DataFrame, output: str) -> None:
-    """Create heatmaps showing where each reagent/solvent is dispensed.
+def build_selections_from_interactive(
+    *,
+    rows: int,
+    cols: int,
+    reagents: List[Reagent],
+    solvents: List[Solvent],
+    conc_limiting_df: pd.DataFrame,  # M, per well
+    temperature_plate: Optional[float],
+    time_plate: Optional[float],
+    hci_groups: List[Dict],          # from HCI: hasGroups
+) -> List[Dict[str, Any]]:
+    """
+    Create the 'selections' array expected by synthesis_writer:
+    [
+      {
+        "groups": {
+          "<groupName>": {"member": "<chemicalName>", "equivalents": <float>},
+          ...
+        },
+        "globals": {"concentration": <M>, "temperature": <C>, "time": <min>}
+      },
+      ...
+    ]
+    Rules:
+      - if a reagent’s location matrix includes the well, and that reagent’s name is
+        a member of group <g>, add it as the member for that group (one member per group).
+      - solvent group: will be handled by synthesis_writer (residual volume).
+    """
+    # Index group membership from HCI once
+    group_to_members = {}
+    for g in hci_groups or []:
+        gname = g.get("groupName") or g.get("name")
+        if not gname:
+            continue
+        members = []
+        for m in g.get("members", []):
+            ref = m.get("reference") or {}
+            nm = ref.get("chemicalName")
+            if nm:
+                members.append(nm)
+        group_to_members[gname] = set(members)
 
-    Reagents are colour coded by their final concentration in each well while
-    solvents remain binary.
+    # Quick lookup reagent by name
+    reag_by_name = {r.name: r for r in reagents}
+
+    selections: List[Dict[str, Any]] = []
+
+    for r_idx, c_idx, _label in _iter_wells(rows, cols):
+        # Per-well globals
+        conc_here = float(conc_limiting_df.iloc[r_idx, c_idx]) if not conc_limiting_df.empty else None
+        globals_block: Dict[str, Any] = {}
+        if conc_here is not None:
+            globals_block["concentration"] = conc_here
+        if temperature_plate is not None:
+            globals_block["temperature"] = float(temperature_plate)
+        if time_plate is not None:
+            globals_block["time"] = float(time_plate)
+
+        groups_block: Dict[str, Dict[str, Any]] = {}
+
+        # For each HCI group, see if exactly one of its members is placed in this well
+        for gname, member_names in group_to_members.items():
+            chosen_name: Optional[str] = None
+            chosen_eq: Optional[float] = None
+
+            # check if any reagent with name in member_names is located here
+            for nm in member_names:
+                r = reag_by_name.get(nm)
+                if r is None or r.locations.empty:
+                    continue
+                if bool(r.locations.iloc[r_idx, c_idx]):
+                    chosen_name = r.name
+                    chosen_eq = r.equivalents
+                    break  # first match wins (one member per group)
+
+            if chosen_name is not None:
+                groups_block[gname] = {"member": chosen_name}
+                if chosen_eq is not None:
+                    groups_block[gname]["equivalents"] = float(chosen_eq)
+
+        selections.append({"groups": groups_block, "globals": globals_block})
+
+    return selections
+
+def visualize_distribution(
+    reagents: List[Reagent],
+    solvents: List[Solvent],
+    plate: Plate,
+    final_volume: pd.DataFrame,
+    output: str,
+    *,
+    vmax_percentile: Optional[float] = None,  # e.g. 99.0 to cap outliers; None = use absolute max
+) -> None:
+    """
+    Heatmaps for reagents are colored by concentration (M) on a **shared** color scale.
+    Solvents remain binary maps (Blues). If final_volume has zeros, those wells will show 0 M.
     """
     items = reagents + solvents
     if not items:
         return
+
+    # --- Precompute reagent concentrations to find global vmax ---
+    conc_arrays: List[np.ndarray] = []
+    for item in reagents:
+        if item.moles is not None and not item.moles.empty:
+            conc = (item.moles / (final_volume / 1_000_000)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            conc_arrays.append(conc.values.astype(float))
+
+    if conc_arrays:
+        all_vals = np.concatenate([arr.ravel() for arr in conc_arrays])
+        all_vals = all_vals[np.isfinite(all_vals)]
+        if all_vals.size == 0:
+            global_vmax = 1.0
+        elif vmax_percentile is not None:
+            global_vmax = float(np.percentile(all_vals, vmax_percentile))
+            if global_vmax <= 0:
+                global_vmax = float(all_vals.max(initial=1.0))
+        else:
+            global_vmax = float(all_vals.max(initial=1.0))
+    else:
+        global_vmax = 1.0  # fallback
+
+    # --- Plot grid ---
     n = len(items)
     cols = min(4, n)
-    rows = math.ceil(n / cols)
-    fig, axarr = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
+    rows = int(math.ceil(n / cols))
+    fig, axarr = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.2))
 
-    # Normalize to a plain List[Axes] for the type checker and for consistent iteration
     axes_list = np.atleast_1d(axarr).ravel().tolist()
     axes: List[Axes] = cast(List[Axes], axes_list)
-    for ax in axes[len(items):]:
+
+    # Turn off extra axes
+    for ax in axes[n:]:
         ax.axis('off')
+
+    # Draw
     for ax, item in zip(axes, items):
-        if isinstance(item, Reagent) and not item.moles.empty:
-            conc = item.moles / (final_volume / 1_000_000)
-            conc = conc.fillna(0.0)
-            im = ax.imshow(conc.values, cmap="viridis")
+        if isinstance(item, Reagent) and item.moles is not None and not item.moles.empty:
+            conc = (item.moles / (final_volume / 1_000_000)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            im = ax.imshow(conc.values, cmap="viridis", vmin=0.0, vmax=global_vmax)
             cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
             cbar.set_label("M")
         else:
-            mat = item.locations.astype(int)
+            # solvents (and any non-reagent) remain binary maps
+            mat = item.locations.astype(int) if hasattr(item, "locations") else plate.template*0
             im = ax.imshow(mat.values, cmap="Blues", vmin=0, vmax=1)
         ax.set_xticks(range(plate.cols))
         ax.set_xticklabels(plate.template.columns)
         ax.set_yticks(range(plate.rows))
         ax.set_yticklabels(plate.template.index)
         ax.set_title(item.name)
+
     plt.tight_layout()
     plt.savefig(output)
     plt.close(fig)
+
 
 def ensure_molar_mass(self) -> None:
     # Prefer pre-populated molar mass (e.g., from HCI), otherwise fetch by InChIKey if possible
@@ -359,7 +509,7 @@ def load_synthesis_and_emit_outputs(
 
     # Write Excel
     reaction_name = reaction_name or "synthesis"
-    output_file = out_dir / f"{reaction_name}.xlsx"
+    output_file = out_dir / f"{reaction_name}"
     with pd.ExcelWriter(output_file) as writer:
         # Per-well sheet (multicol — same as your previous structure)
         per_well = pd.concat(results, axis=1)
@@ -383,40 +533,62 @@ def visualize_distribution_synthesis(
     rows: int, cols: int,
     results_globals: Optional[Dict[str, pd.DataFrame]] = None,
     out_path: Path = Path("layout.png"),
+    *,
+    vmax_percentile: Optional[float] = None,   # e.g. 99.0 to cap outliers; None = absolute max
 ) -> None:
     """
-    Make a compact grid: chemicals (by concentration) + globals (temperature/time).
+    Grid of heatmaps: chemicals by concentration (M) with a **shared** color scale,
+    plus global fields (temperature/time/etc.) with their own independent scales.
     """
-    # chemicals
     chem_names = list(per_chem_moles.keys())
-    # globals (temperature/time/others)
     global_names = list((results_globals or {}).keys())
 
+    # --- Global vmax across *all chemical* concentration maps ---
+    conc_arrays: List[np.ndarray] = []
+    for nm in chem_names:
+        mol = per_chem_moles[nm]
+        conc = (mol / (final_volume / 1_000_000)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        conc_arrays.append(conc.values.astype(float))
+
+    if conc_arrays:
+        all_vals = np.concatenate([a.ravel() for a in conc_arrays])
+        all_vals = all_vals[np.isfinite(all_vals)]
+        if all_vals.size == 0:
+            global_vmax = 1.0
+        elif vmax_percentile is not None:
+            global_vmax = float(np.percentile(all_vals, vmax_percentile))
+            if global_vmax <= 0:
+                global_vmax = float(all_vals.max(initial=1.0))
+        else:
+            global_vmax = float(all_vals.max(initial=1.0))
+    else:
+        global_vmax = 1.0
+
+    # --- Layout ---
     n_items = len(chem_names) + len(global_names)
     if n_items == 0:
         return
 
     ncols = min(4, max(1, n_items))
-    nrows = math.ceil(n_items / ncols)
-    fig, axarr = plt.subplots(nrows, ncols, figsize=(ncols * 3.2, nrows * 3.2))
+    nrows = int(math.ceil(n_items / ncols))
+    fig, axarr = plt.subplots(nrows, ncols, figsize=(ncols*3.2, nrows*3.2))
 
     axes_list = np.atleast_1d(axarr).ravel().tolist()
     axes: List[Axes] = cast(List[Axes], axes_list)
 
     idx = 0
-    # Chemicals: plot concentration if moles are present
+    # Chemicals (shared vmin/vmax)
     for chem in chem_names:
         ax = axes[idx]; idx += 1
-        mol = per_chem_moles[chem]  # mol per well
-        conc = mol / (final_volume / 1_000_000)  # M
-        conc = conc.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        im = ax.imshow(conc.values, cmap="viridis")
+        mol = per_chem_moles[chem]
+        conc = (mol / (final_volume / 1_000_000)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        im = ax.imshow(conc.values, cmap="viridis", vmin=0.0, vmax=global_vmax)
         ax.set_title(chem)
         ax.set_xticks(range(cols)); ax.set_yticks(range(rows))
         ax.set_xticklabels(range(1, cols+1)); ax.set_yticklabels(list(string.ascii_uppercase[:rows]))
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04); cbar.set_label("M")
 
-    # Globals
+    # Globals (own scales)
     for g in global_names:
         ax = axes[idx]; idx += 1
         df = results_globals[g].astype(float)
@@ -564,9 +736,12 @@ def main() -> None:
     reagents: List[Reagent] = []
     solvents: List[Solvent] = []
     stock_solutions: List[Stock_Solution] = []
+    hci_catalog: dict[str, dict] = {}
 
     # Preferred preload source: HCI
+
     if args.hci:
+        import json
         try:
             hci_path = str(out_dir / args.hci)
             pre_r, pre_s = preload_from_hci(Path(hci_path), plate)
@@ -575,6 +750,13 @@ def main() -> None:
             if reagents or solvents:
                 print(
                     f"Preloaded from HCI: {len(reagents)} reagents, {len(solvents)} solvents (you can edit/confirm in prompts).")
+            hci_doc = json.loads(Path(hci_path).read_text(encoding="utf-8"))
+            camp = hci_doc.get("hasCampaign", {})
+            for ref in camp.get("hasChemical", []):
+                nm = (ref.get("chemicalName") or ref.get("chemicalID") or "").strip()
+                if not nm:
+                    continue
+                hci_catalog[nm] = ref  # keep the full reference block
         except Exception as e:
             print(f"Warning: failed to preload from HCI: {e}")
 
@@ -590,32 +772,107 @@ def main() -> None:
             name = input("Reagent name (blank to finish): ").strip()
             if not name:
                 break
-            inchikey = input("InChIKey: ").strip()
-            rtype = input("Type [solid/liquid/solvent]: ").strip().lower()
-            if rtype == 'solvent':
+            if name.lower() == "list" and hci_catalog:
+                print("HCI chemicals:", ", ".join(sorted(hci_catalog.keys())[:40]), "...")
+                continue
+
+            # Defaults from HCI (if available)
+            ref = hci_catalog.get(name, {})
+            # Map HCI physicalstate -> our rtype
+            phys = (ref.get("physicalstate") or "").lower()
+            default_rtype = "solid"
+            if phys in {"liquid", "solution"}:
+                default_rtype = "liquid"
+
+            default_inchi = ref.get("Inchi") or None
+            if default_inchi is not None:
+                default_inchikey = inchi.InchiToInchiKey(default_inchi)
+            else:
+                default_inchikey = ""
+
+            default_density = None
+            d = ref.get("density")
+            if isinstance(d, dict):
+                try:
+                    default_density = float(d.get("value"))
+                except Exception:
+                    pass
+
+            default_conc = None
+            c = ref.get("concentration")
+            if isinstance(c, dict):
+                try:
+                    default_conc = float(c.get("value"))
+                except Exception:
+                    pass
+
+            default_mm = None
+            mm = ref.get("molecularMass")
+            if isinstance(mm, dict):
+                try:
+                    default_mm = float(mm.get("value"))
+                except Exception:
+                    pass
+
+            # If HCI groups contain "solvent" and this name appears there, suggest rtype=solvent
+            default_is_solvent = False
+            try:
+                for g in (hci_doc.get("hasCampaign", {}).get("hasGroups", []) or []):
+                    if g.get("groupName", "").lower() == "solvent":
+                        for m in g.get("members", []) or []:
+                            rref = m.get("reference") or {}
+                            if rref.get("chemicalName") == name:
+                                default_is_solvent = True
+                                break
+            except Exception:
+                pass
+
+            # --- Ask with defaults (ENTER keeps HCI-derived value) ---
+            inchikey = _ask_with_default("InChIKey", default_inchikey)
+
+            # rtype: if HCI flagged it as solvent, default to 'solvent'
+            suggested_rtype = "solvent" if default_is_solvent else default_rtype
+            rtype = _ask_with_default("Type [solid/liquid/solvent]", suggested_rtype).lower()
+
+            if rtype == "solvent":
                 solv = Solvent(name=name, inchikey=inchikey)
+                # Placement still needed
                 solv.locations = plate.parse_location(f"solvent {name}")
                 solvents.append(solv)
                 continue
-            eqv = float(input("Equivalents: "))
+
+            # Non-solvent reagent
+            # Equivalents usually aren’t in HCI; ask, but allow empty to keep previous (None)
+            eqv = _ask_float_with_default("Equivalents", None)
+            if eqv is None:
+                # sensible fallback if left blank
+                eqv = 1.0
+
             is_limiting = False
             if not limiting_set:
-                ans = input("Is this the limiting reagent? [y/N]: ").strip().lower()
-                is_limiting = ans == 'y'
-                limiting_set = is_limiting
-            density = None
-            concentration = None
-            if rtype == 'liquid':
-                d = input("Density (g/mL, blank if not known): ").strip()
-                if d:
-                    density = float(d)
-                c = input("Concentration (mol/L, blank if not known): ").strip()
-                if c:
-                    concentration = float(c)
-            stock_solution = input("Is this a stock solution? [y/N]: ").strip().lower() == 'y'
-            reagent = Reagent(name=name, inchikey=inchikey, rtype=rtype,
-                              equivalents=eqv, is_limiting=is_limiting,
-                              density=density, concentration=concentration, stock_solution=stock_solution)
+                ans = _ask_with_default("Is this the limiting reagent? [y/N]", "N").lower()
+                is_limiting = (ans in ("y", "yes"))
+                limiting_set = limiting_set or is_limiting
+
+            density = _ask_float_with_default("Density (g/mL)", default_density) if rtype == "liquid" else None
+            concentration = _ask_float_with_default("Concentration (mol/L)",
+                                                    default_conc) if rtype == "liquid" else None
+
+            # Stock solution?
+            stock_solution_ans = _ask_with_default("Is this a stock solution? [y/N]", "N").lower()
+            stock_solution = stock_solution_ans in ("y", "yes")
+
+            reagent = Reagent(
+                name=name,
+                inchikey=inchikey,
+                rtype=rtype,
+                equivalents=float(eqv),
+                is_limiting=is_limiting,
+                density=density,
+                concentration=concentration,
+                stock_solution=stock_solution,
+                molar_mass=default_mm,  # <- prefill MW from HCI; ensure_molar_mass will respect it
+            )
 
             reagent.locations = plate.parse_location(f"reagent {name}")
             reagents.append(reagent)
@@ -750,7 +1007,81 @@ def main() -> None:
 
     totals_series = pd.Series(totals, name='Total')
 
-    with pd.ExcelWriter(output_file) as writer:
+    #  -----------------------------
+    # Write Synthesis.json file
+    #  -----------------------------
+
+    # Ask for plate-constant temperature & time (experimental constraints)
+
+    def _ask_float_or_blank(prompt: str) -> Optional[float]:
+        s = input(prompt).strip()
+        return float(s) if s else None
+
+    print("\nEnter plate-constant conditions (leave blank to skip; but please don't skip :'( ):")
+    temperature_plate = _ask_float_or_blank("  Temperature (°C): ")
+    time_plate = _ask_float_or_blank("  Time (min): ")
+
+    # Synthesis writer (current implementation) assumes a SINGLE well volume (µL) for dosing
+    # If your final_volume matrix varies, we’ll take the most common value and warn.
+    unique_vols = pd.unique(final_volume.values.ravel())
+    unique_vols = [float(v) for v in unique_vols if not pd.isna(v)]
+    if not unique_vols:
+        raise RuntimeError("Final volume matrix is empty.")
+    mode_volume = max(set(unique_vols), key=unique_vols.count)
+    if len(set(unique_vols)) > 1:
+        print(f"Warning: final volume varies across wells; using the mode: {mode_volume} µL "
+              f"(synthesis_writer expects a constant per-well volume).")
+
+    # Load HCI (required on this path), convert to optimizer dict for writer
+    hci_path = Path(args.hci) if args.hci else None
+    if not hci_path or not hci_path.exists():
+        raise SystemExit("HCI file (--hci) is required when --synthesis is not provided.")
+
+    import json
+    hci_doc = json.loads(hci_path.read_text(encoding="utf-8"))
+    opt_spec = hci_to_optimizer_dict(hci_doc)  # dict -> optimizer dict
+
+    # Build 'selections' (groups/globals per well) from interactive placements & equivalents
+    hci_groups = (hci_doc.get("hasCampaign") or {}).get("hasGroups", [])
+    selections = build_selections_from_interactive(
+        rows=rows,
+        cols=cols,
+        reagents=reagents,
+        solvents=solvents,
+        conc_limiting_df=conc_limiting,
+        temperature_plate=temperature_plate,
+        time_plate=time_plate,
+        hci_groups=hci_groups,
+    )
+
+    # Emit synthesis.json via synthesis_writer (it will also append catalog chemicals not in any group)
+    plate_size = rows * cols
+    synthesis_out = out_dir / f"{reaction_name}_synthesis.json"
+
+    write_synthesis_json(
+        opt_spec=opt_spec,
+        selections=selections,
+        out_path=synthesis_out,
+        plate_size=plate_size,
+        well_volume_uL=mode_volume,  # constant per the writer’s current API
+        limiting_name=None,  # optional; you can pass your limiting reagent name if desired
+        experiment_start_index=1,
+        concentration_key="concentration",
+        # You can optionally control equivalents for catalog (non-group) chemicals:
+        # fixed_equivalents_for_catalog={"Substrate A": 1.0},
+        # default_catalog_equivalents=2.0,
+    )
+
+    print(f"Created synthesis.json: {synthesis_out}")
+
+    # Reuse the synthesis fast-path to generate Excel + plots (includes temp/time heatmaps)
+    reaction_name_for_outputs = args.output or reaction_name
+    load_synthesis_and_emit_outputs(synthesis_out, out_dir, reaction_name=reaction_name_for_outputs)
+
+    # Write the final DataFrame to Excel; legacy shouldn't be required anymore, but kept for reference.
+
+    """
+    #with pd.ExcelWriter(output_file) as writer:
         df.to_excel(writer, sheet_name='per_well')
         totals_series.to_frame().to_excel(writer, sheet_name='totals')
     print(f"Results written to {output_file}")
@@ -758,6 +1089,8 @@ def main() -> None:
     viz_file = f"{reaction_name}_layout.png"
     visualize_distribution(reagents, solvents, plate, final_volume, str(out_dir/viz_file))
     print(f"Layout visualization saved to {viz_file}")
+    """
+
 
 
 if __name__ == '__main__':

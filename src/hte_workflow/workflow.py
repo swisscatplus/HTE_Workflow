@@ -364,7 +364,7 @@ def run_hte_calculator(prefix: str, data_dir: Path, out_dir: Path,
         # Add more patterns here as needed...
     ]
 
-    if preload or synthesis or hci:
+    if preload or synthesis:
         AUTO_ANSWERS.extend([
 
             # No need to add more as autofilled correctly
