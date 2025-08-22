@@ -202,9 +202,12 @@ def propose_plate_with_plate_globals_BO_auto(
         chosen = {pname: (rng["min"] + rng["max"]) / 2.0 for pname, rng in plate_globals.items()}
         return chosen, Xq
 
+    # default Kernel is Matérn 5/2 with ARD
     gp = SingleTaskGP(X_train, y_train)
     mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
     fit_gpytorch_mll(mll)
+
+    # MC based acquisition function for noise handling
     acq = qNoisyExpectedImprovement(model=gp, X_baseline=X_train, sampler=SobolQMCNormalSampler(128)) \
           if use_noisy_ei else \
           qExpectedImprovement(model=gp, best_f=y_train.max(), sampler=SobolQMCNormalSampler(128))
@@ -228,7 +231,7 @@ def propose_plate_with_plate_globals_BO_auto(
 
         lb, ub = encoder.bounds()
         cand, val = optimize_acqf(
-            acq_function=acq,
+            acq_function=acq,  # Samples Monte-Carlo q EI for batched experiments
             bounds=torch.stack((lb, ub)),
             q=q,
             num_restarts=10,
