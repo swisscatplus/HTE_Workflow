@@ -8,6 +8,7 @@ import datetime
 import subprocess
 import re
 import json
+import io
 
 from importlib import import_module
 from typing import Optional, Tuple, List, Any, Dict
@@ -509,6 +510,52 @@ def run_reaction_analysis(prefix: str, limiting: str, calculator_file: str,
 
     return analysis_output_file
 
+
+#  ---------------------------------------------------------------------------
+# Step 4: Running Lucas' file
+# ---------------------------------------------------------------------------
+
+
+class WorkflowCallRewriter(ast.NodeTransformer):
+    def __init__(self, new_args: List[str]):
+        self.new_args = new_args
+
+    def visit_Call(self, node: ast.Call):
+        self.generic_visit(node)
+        # Look for workflow.create_new_workflow(...)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "create_new_workflow"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "workflow"
+        ):
+            # Replace arguments with new string literals (first arg can be string, others too)
+            node.args = [ast.Constant(val) for val in self.new_args]
+        return node
+
+
+def rewrite_and_run_luca(target_path: str, new_args: List[str]):
+    """
+    Rewrites the call to workflow.create_new_workflow in target_path with new_args, then runs the file.
+    new_args: list of strings, e.g. ["My_Workflow", True, "Step1", "Step2"]
+    """
+    target_path = os.path.abspath(target_path)
+
+    with io.open(target_path, "r", encoding="utf-8") as f:
+        src = f.read()
+
+    tree = ast.parse(src, filename=target_path)
+    tree = ast.fix_missing_locations(WorkflowCallRewriter(new_args).visit(tree))
+    new_src = ast.unparse(tree)
+
+    with io.open(target_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(new_src)
+
+    # Run modified file with same Python
+    return subprocess.run([sys.executable, target_path], check=False)
+
+
+
 # ---------------------------------------------------------------------------
 # Main orchestration
 # ---------------------------------------------------------------------------
@@ -611,6 +658,27 @@ def main() -> None:
         print(f"Reagents calculated and saved to {calculator_file}.")
         print("Executing Lucas' file")
         # Placeholder for Lucas' file execution
+
+        lucas_file_path = str(out_dir/str("Luca_file.py"))
+        workflow_steps = []
+        n_liquid_dispenses = int(input("Number of liquid dispense steps: ").strip())
+        n_solid_dispenses = int(input("Number of solid dispense steps: ").strip())
+        n_washing_cycles = int(input("Number of washing cycles: ").strip())
+        filtration = True if (input("Filtration step (y/n)? ").strip().lower() == "y") else False
+
+        if n_solid_dispenses > 0:
+            for i in range(n_solid_dispenses):
+                workflow_steps.append("gdf_dispense")
+        if n_liquid_dispenses > 0:
+            for i in range(n_liquid_dispenses):
+                workflow_steps.append("4_n_head_dispense")
+        if n_washing_cycles > 0:
+            for i in range(n_washing_cycles):
+                workflow_steps.append("somthing_dispense")
+        if filtration:
+            workflow_steps.append("filtration")
+
+        rewrite_and_run_luca(lucas_file_path, workflow_steps)
 
         print("Workflow send to ArkSuite.")
         input("Prepare the digital twin and download the workflow template. Press Enter to continue...")
