@@ -33,7 +33,7 @@ def read_experiment_definition(path: str) -> Tuple[pd.DataFrame, Dict[int, str]]
 
 def map_experiments_to_wells(num_experiments: int) -> Tuple[pd.DataFrame, Dict[str, Tuple[str, int]]]:
     """Return a plate layout mapping experiments column-wise."""
-    layouts = {24: (4, 6), 48: (6, 8), 96: (8, 12)}
+    layouts = {24: (4, 6), 48: (6, 8), 96: (8, 12), 18: (4, 5)}
     if num_experiments not in layouts:
         raise ValueError(f"Unsupported number of experiments: {num_experiments}")
 
@@ -274,7 +274,7 @@ def main() -> None:
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).resolve()
-    out_dir = Path(args.output_dir).resolve()
+    out_dir = Path(args.out_dir).resolve()
 
     excel_path = data_dir / args.excel
     output_excel = out_dir / args.output

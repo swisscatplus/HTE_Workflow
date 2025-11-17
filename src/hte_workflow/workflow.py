@@ -30,6 +30,16 @@ from json_handling.library_and_hci_adapter import hci_to_optimizer_dict
 # Helper utilities
 # ---------------------------------------------------------------------------
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 def _rename(src: str, dst: str) -> Optional[str]:
     """Rename *src* to *dst* if it exists and return the destination path."""
     if os.path.exists(src):
@@ -44,7 +54,7 @@ def _ask(prompt: str, default: Optional[str] = None) -> str:
     if prompt == "Campaign name":
         # Ensure campaign name is not empty
         if not val:
-            raise ValueError("Give a campaign name you fool!")
+            raise ValueError("Metadata is not optional. Give a campaign name you fool!")
 
     return default if (val == "" and default is not None) else val
 
@@ -327,6 +337,33 @@ def run_bo_script(prefix: str, hci_file: str, limiting: str, well_volume_ul: flo
 
     return synthesis_file
 
+def create_manual_synthesis_file(prefix: str, hci_file: str, limiting: str, well_volume_ul: float,
+                                 data_dir: Path, out_dir: Path,) -> str:
+    """
+    Create a synthesis file via the manual plate builder.
+    """
+    hci_path = hci_file
+    synthesis_file = str(f"{prefix}_synthesis.json")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hte_workflow.manual_plate_builder",
+            "--hci-file", str(hci_path),
+            "--out", synthesis_file,
+            "--limiting-name", limiting,
+            "--well-volume-uL", str(well_volume_ul),
+            "--data-dir", str(data_dir),
+            "--out-dir", str(out_dir),
+        ],
+        check=True,
+    )
+
+    return synthesis_file
+
+
+
 # ---------------------------------------------------------------------------
 # Step 1: HTE calculator
 # ---------------------------------------------------------------------------
@@ -406,26 +443,50 @@ def run_hte_calculator(prefix: str, data_dir: Path, out_dir: Path,
 # Step 2: Workflow checker
 # ---------------------------------------------------------------------------
 
-def run_workflow_checker(prefix: str, calculator_file: str, data_dir: Path, out_dir: Path) -> str:
+def run_workflow_checker(prefix: str, calculator_file: str, data_dir: Path, out_dir: Path,
+                         synthesis_file: Optional[str] = None) -> str:
     """Fill and visualise the workflow based on the calculator output."""
     template = input("Workflow Excel template file: ").strip()
     workflow_file = f"{prefix}_workflow.xlsx"
     shutil.copyfile(str(data_dir / template), str(data_dir / workflow_file))
 
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "hte_workflow.workflow_checker",
-            calculator_file,
-            workflow_file,
-            "--visualize",
-            "--fill",
-            "--data-dir", str(data_dir),
-            "--out-dir", str(out_dir),
-        ],
-        check=True,
-    )
+    if synthesis_file:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "hte_workflow.workflow_checker",
+                calculator_file,
+                workflow_file,
+                "--visualize",
+                "--fill",
+                "--data-dir", str(data_dir),
+                "--out-dir", str(out_dir),
+                "--fill-from-synthesis",
+                "--synthesis-file",
+                synthesis_file,
+                "--viz-plate",
+                "--viz-heatmaps",
+                "--viz-chemicals",
+                "--viz-solvent-remainder"
+            ],
+            check=True,
+        )
+    else:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "hte_workflow.workflow_checker",
+                calculator_file,
+                workflow_file,
+                "--visualize",
+                "--fill",
+                "--data-dir", str(data_dir),
+                "--out-dir", str(out_dir),
+            ],
+            check=True,
+        )
 
     _rename(str(out_dir/ "layout.png"), str(out_dir/f"{prefix}_workflow_layout.png"))
     _rename(str(out_dir/"experiment_map.png"), str(out_dir/f"{prefix}_experiment_map.png"))
@@ -525,8 +586,14 @@ def main() -> None:
     parser.add_argument("--synth-file",
                         default=None,
                         help="Path to the synthesis file to create (if not provided, will be created interactively)")
-    parser.add_argument("--BO",
-                        default=False)
+    parser.add_argument(
+        "--BO",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help="Use Bayesian optimization mode (True/False)",
+    )
     parser.add_argument(
         "--data-dir",
         default=str(DATA_DIR),
@@ -575,7 +642,7 @@ def main() -> None:
     bayesian_iteration = 1
     max_bayesian_iterations = 1  # Set a maximum number of iterations for Bayesian optimization
     while True: #  Loop for several plates via Bayesian
-        if args.BO == "True":
+        if args.BO:
             print("Bayesian optimization is running. ")
             synthesis_file = run_bo_script(
                 prefix=prefix,
@@ -589,6 +656,15 @@ def main() -> None:
             )
         elif args.synth_file:
             synthesis_file = str(args.synth_file)
+        elif _ask("Creative manual plate? [y/n]", "y") == "y":
+            synthesis_file = create_manual_synthesis_file(
+                prefix=prefix,
+                hci_file=hci_file_path,
+                limiting=limiting,
+                well_volume_ul=well_volume_ul,
+                data_dir=data_dir,
+                out_dir=out_dir,
+            )
         else:
             synthesis_file = None
 
@@ -609,14 +685,17 @@ def main() -> None:
             calculator_file = run_hte_calculator(prefix, data_dir, out_dir, hci=str(args.hci_file), well_volume = well_volume_ul)
 
         print(f"Reagents calculated and saved to {calculator_file}.")
-        print("Executing Lucas' file")
+        print("Executing Lucas' file (currently not implemented)")
         # Placeholder for Lucas' file execution
 
         print("Workflow send to ArkSuite.")
         input("Prepare the digital twin and download the workflow template. Press Enter to continue...")
 
-        # ideally be avoided by directly starting Lucas' file and running the excel
-        workflow_file = run_workflow_checker(prefix, calculator_file, data_dir, out_dir)
+        # ideally be avoided by directly starting Lucas' file and running the excel$
+        if synthesis_file:
+            workflow_file = run_workflow_checker(prefix, calculator_file, data_dir, out_dir, synthesis_file)
+        else:
+            workflow_file = run_workflow_checker(prefix, calculator_file, data_dir, out_dir)
 
 
         print("Check if the experiment setup is correct.")
