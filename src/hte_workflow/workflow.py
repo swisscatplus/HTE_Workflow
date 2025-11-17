@@ -362,6 +362,31 @@ def create_manual_synthesis_file(prefix: str, hci_file: str, limiting: str, well
 
     return synthesis_file
 
+def create_gui_synthesis_file(prefix: str, hci_file: str, limiting: str, well_volume_ul: float,
+                                 data_dir: Path, out_dir: Path,) -> str:
+    """
+    Create a synthesis file via the manual plate builder.
+    """
+    hci_path = hci_file
+    synthesis_file = str(f"{prefix}_synthesis.json")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hte_workflow.manual_plate_gui",
+            "--hci-file", str(hci_path),
+            "--out", synthesis_file,
+            "--limiting-name", limiting,
+            "--well-volume-uL", str(well_volume_ul),
+            "--data-dir", str(data_dir),
+            "--out-dir", str(out_dir),
+        ],
+        check=True,
+    )
+
+    return synthesis_file
+
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +681,15 @@ def main() -> None:
             )
         elif args.synth_file:
             synthesis_file = str(args.synth_file)
+        elif _ask("Creative manual plate via visual? [y/n]", "y") == "y":
+            synthesis_file = create_gui_synthesis_file(
+                prefix=prefix,
+                hci_file=hci_file_path,
+                limiting=limiting,
+                well_volume_ul=well_volume_ul,
+                data_dir=data_dir,
+                out_dir=out_dir,
+            )
         elif _ask("Creative manual plate? [y/n]", "y") == "y":
             synthesis_file = create_manual_synthesis_file(
                 prefix=prefix,
