@@ -27,8 +27,8 @@ def _save_json(obj: Any, p: str | Path) -> None:
 
 def _plate_dims(plate_size: int) -> Tuple[int, int]:
     # Common SBS:
-    # 24 -> 4x6, 48 -> 6x8, 96 -> 8x12, 384 -> 16x24, 1536 -> 32x48
-    mapping = {24: (4, 6), 48: (6, 8), 96: (8, 12), 384: (16, 24), 1536: (32, 48)}
+    mapping = {6: (2,3), 12: (3,4), 18: (3,6), 24: (4, 6),
+               48: (6, 8), 96: (8, 12), 384: (16, 24), 1536: (32, 48)}
     if plate_size not in mapping:
         # best guess: make it roughly square
         cols = int(math.ceil(math.sqrt(plate_size)))
