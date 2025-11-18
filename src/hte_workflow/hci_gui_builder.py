@@ -31,6 +31,20 @@ from tkinter import ttk, messagebox, filedialog
 from hte_workflow.paths import DATA_DIR, OUT_DIR, ensure_dirs
 from json_handling.hci_file_creator import build_chemical_space_from_spec, load_library
 
+# Optional RDKit / Pillow support for structure rendering
+try:
+    from rdkit import Chem
+    from rdkit.Chem import Draw
+    from PIL import ImageTk
+
+    _HAS_RDKIT = True
+except Exception:
+    Chem = None
+    Draw = None
+    ImageTk = None
+    _HAS_RDKIT = False
+
+
 
 # ---------------------------------------------------------------------------
 # GUI class
@@ -52,7 +66,11 @@ class HciBuilderGUI(tk.Tk):
         # Build a search index from library
         self._lib_records: List[Any] = []
         self._lib_display_rows: List[Tuple[str, str]] = []  # [(display_str, chemicalName), ...]
+        self._lib_by_name: Dict[str, Any] = {}  # chemicalName -> record
         self._build_library_index()
+
+        # Holder for currently displayed structure image (to avoid GC)
+        self._chem_img = None
 
         # State for spec being constructed
         self.ranges: Dict[str, Dict[str, Any]] = {}
@@ -116,9 +134,9 @@ class HciBuilderGUI(tk.Tk):
         """
         Build a simple search index from the ChemicalLibrary object.
         We assume the loader used in workflow.py:
-          lib._by_name: dict[name_lower -> record]
-        where record has attributes:
-          chemicalName, chemicalID, swissCatNumber, ...
+          lib._by_name: dict[name_lower -> Chemical]
+        where Chemical has attributes:
+          chemicalName, chemicalID, swissCatNumber, molecularMass, physicalstate, smiles, ...
         """
         try:
             by_name = getattr(self.lib, "_by_name", {})
@@ -127,6 +145,7 @@ class HciBuilderGUI(tk.Tk):
 
         self._lib_records = list(by_name.values())
         self._lib_display_rows.clear()
+        self._lib_by_name.clear()
 
         for rec in self._lib_records:
             name = getattr(rec, "chemicalName", "")
@@ -139,16 +158,64 @@ class HciBuilderGUI(tk.Tk):
                 label_parts.append(f"(SwissCat: {swiss})")
             display = " ".join(label_parts)
             self._lib_display_rows.append((display, name))
+            if name:
+                self._lib_by_name[name] = rec
 
     # ------------------------------------------------------------------ #
     # UI building
     # ------------------------------------------------------------------ #
 
     def _build_ui(self) -> None:
+        # The main window itself is a single grid cell
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        nb = ttk.Notebook(self)
+        # --- Scrollable container ---
+        container = ttk.Frame(self)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(container, highlightthickness=0)
+        vscroll = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vscroll.grid(row=0, column=1, sticky="ns")
+
+        # Inner frame that will contain ALL UI (including the Notebook)
+        self.inner = ttk.Frame(canvas)
+        self.inner.columnconfigure(0, weight=1)
+
+        # put inner frame into canvas
+        window_id = canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+        # Update scroll region when inner frame grows/shrinks
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        self.inner.bind("<Configure>", _on_frame_configure)
+
+        # Make inner frame always as wide as the canvas
+        def _on_canvas_configure(event):
+            canvas.itemconfigure(window_id, width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        # Mouse wheel scrolling (Windows / Mac / Linux)
+        def _on_mousewheel(event):
+            # Windows / MacOS: event.delta is ±120
+            delta = event.delta
+            if delta != 0:
+                canvas.yview_scroll(int(-delta / 120), "units")
+
+        # Linux uses Button-4/5 events
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+        # --- Notebook lives inside the scrollable inner frame ---
+        nb = ttk.Notebook(self.inner)
         nb.grid(row=0, column=0, sticky="nsew")
 
         # Tabs
@@ -441,13 +508,31 @@ class HciBuilderGUI(tk.Tk):
         self.search_listbox = tk.Listbox(right, height=8)
         self.search_listbox.grid(row=4, column=0, sticky="nsew")
 
+        # Update details when a search result is selected
+        self.search_listbox.bind("<<ListboxSelect>>", self._on_search_select)
+
+        # Details panel: textual info + optional structure
+        details_frame = ttk.LabelFrame(right, text="Chemical details", padding=5)
+        details_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        details_frame.columnconfigure(0, weight=1)
+
+        self.chem_info_label = ttk.Label(details_frame, text="", justify="left")
+        self.chem_info_label.grid(row=0, column=0, sticky="w")
+
+        # Image label for RDKit drawing (if available)
+        self.chem_img_label = ttk.Label(details_frame)
+        self.chem_img_label.grid(row=0, column=1, sticky="e", padx=8)
+
+
         # Members
-        ttk.Label(right, text="Members in group").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(right, text="Members in group").grid(row=6, column=0, sticky="w", pady=(6, 0))
         self.members_listbox = tk.Listbox(right, height=8)
-        self.members_listbox.grid(row=6, column=0, sticky="nsew")
+        self.members_listbox.grid(row=7, column=0, sticky="nsew")
+        self.members_listbox.bind("<<ListboxSelect>>", self._on_member_select)
+
 
         btn_mframe = ttk.Frame(right)
-        btn_mframe.grid(row=7, column=0, sticky="ew", pady=4)
+        btn_mframe.grid(row=8, column=0, sticky="ew", pady=4)
         ttk.Button(btn_mframe, text="Add from search", command=self._on_member_add_from_search).grid(
             row=0, column=0, padx=2
         )
@@ -456,12 +541,14 @@ class HciBuilderGUI(tk.Tk):
         )
 
         # Ungrouped / global chemicals
-        ttk.Label(right, text="Ungrouped chemicals").grid(row=8, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(right, text="Ungrouped chemicals").grid(row=9, column=0, sticky="w", pady=(6, 0))
         self.global_listbox = tk.Listbox(right, height=6)
-        self.global_listbox.grid(row=9, column=0, sticky="nsew")
+        self.global_listbox.grid(row=10, column=0, sticky="nsew")
+        self.global_listbox.bind("<<ListboxSelect>>", self._on_global_select)
+
 
         btn_gframe = ttk.Frame(right)
-        btn_gframe.grid(row=10, column=0, sticky="ew", pady=4)
+        btn_gframe.grid(row=11, column=0, sticky="ew", pady=4)
         ttk.Button(btn_gframe, text="Add as global chem", command=self._on_global_add_from_search).grid(
             row=0, column=0, padx=2
         )
@@ -614,6 +701,136 @@ class HciBuilderGUI(tk.Tk):
         g["members"] = members
 
         self.members_listbox.insert(tk.END, selected_name)
+
+    def _on_search_select(self, event=None) -> None:
+        """
+        When a search result is selected, show detailed info + structure.
+        """
+        sel = self.search_listbox.curselection()
+        if not sel:
+            self._set_chem_details(None)
+            return
+
+        disp_row = self.search_listbox.get(sel[0])
+        # Resolve display string -> chemicalName
+        selected_name = None
+        for disp, nm in self._lib_display_rows:
+            if disp == disp_row:
+                selected_name = nm
+                break
+
+        if not selected_name:
+            self._set_chem_details(None)
+            return
+
+        rec = self._lib_by_name.get(selected_name)
+        self._set_chem_details(rec)
+
+    def _on_member_select(self, event=None) -> None:
+        """
+        When a group member is clicked, show its chemical details.
+        """
+        if not hasattr(self, "members_listbox"):
+            return
+        sel = self.members_listbox.curselection()
+        if not sel:
+            self._set_chem_details(None)
+            return
+
+        name = self.members_listbox.get(sel[0]).strip()
+        rec = self._lib_by_name.get(name)
+        self._set_chem_details(rec)
+
+    def _on_global_select(self, event=None) -> None:
+        """
+        When a global (ungrouped) chemical is clicked, show its chemical details.
+        """
+        if not hasattr(self, "global_listbox"):
+            return
+        sel = self.global_listbox.curselection()
+        if not sel:
+            self._set_chem_details(None)
+            return
+
+        name = self.global_listbox.get(sel[0]).strip()
+        rec = self._lib_by_name.get(name)
+        self._set_chem_details(rec)
+
+
+    def _set_chem_details(self, rec: Any | None) -> None:
+        """
+        Update the details pane with metadata + optional RDKit structure.
+        """
+        if rec is None:
+            # clear
+            if hasattr(self, "chem_info_label"):
+                self.chem_info_label.config(text="")
+            if hasattr(self, "chem_img_label"):
+                self.chem_img_label.config(image="")
+            self._chem_img = None
+            return
+
+        name = getattr(rec, "chemicalName", "")
+        chem_id = getattr(rec, "chemicalID", "")
+        swiss = getattr(rec, "swissCatNumber", "")
+        state = getattr(rec, "physicalstate", "")
+
+        # molecularMass may be a Quantity dataclass or dict
+        mm = getattr(rec, "molecularMass", None)
+        mass_val = None
+        mass_unit = ""
+        if mm is not None:
+            # dataclass-like
+            mass_val = getattr(mm, "value", None)
+            mass_unit = getattr(mm, "unit", "") or ""
+            # or JSON-dict-like
+            if mass_val is None and isinstance(mm, dict):
+                mass_val = mm.get("value")
+                mass_unit = mm.get("unit", "")
+
+        lines = []
+        if name:
+            lines.append(f"Name: {name}")
+        if chem_id:
+            lines.append(f"ID: {chem_id}")
+        if swiss:
+            lines.append(f"SwissCat: {swiss}")
+        if mass_val is not None:
+            lines.append(f"MW: {mass_val} {mass_unit}".strip())
+        if state:
+            lines.append(f"Physical state: {state}")
+
+        info_txt = "\n".join(lines) if lines else "No metadata available."
+        if hasattr(self, "chem_info_label"):
+            self.chem_info_label.config(text=info_txt)
+
+        # Draw structure if RDKit is available and SMILES present
+        if _HAS_RDKIT and hasattr(self, "chem_img_label"):
+            smiles = getattr(rec, "smiles", "")
+            if not smiles:
+                self.chem_img_label.config(image="")
+                self._chem_img = None
+                return
+            try:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    self.chem_img_label.config(image="")
+                    self._chem_img = None
+                    return
+                img = Draw.MolToImage(mol, size=(200, 200))
+                # Convert to Tk image and keep a reference
+                self._chem_img = ImageTk.PhotoImage(img)
+                self.chem_img_label.config(image=self._chem_img)
+            except Exception:
+                # Fail silently, keep text info
+                self.chem_img_label.config(image="")
+                self._chem_img = None
+        else:
+            # No RDKit/Pillow -> no image
+            if hasattr(self, "chem_img_label"):
+                self.chem_img_label.config(image="")
+            self._chem_img = None
+
 
     def _on_member_remove(self) -> None:
         if self.current_group_index is None or not (0 <= self.current_group_index < len(self.groups)):
