@@ -280,9 +280,39 @@ def interactive_create_hci(*, library_path: str | Path, out_dir: str | Path) -> 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(hci_json, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nWrote HCI file to: {out_path.resolve()}")
-    return out_path, campaignName, hasBatch["batchID"]
+    return out_path
 
-#-- -------------------------------------------------------------------------
+def gui_create_hci(*, library_name: str, data_dir: str | Path, out_dir: str | Path) -> Path:
+    """
+    Create HCI JSON via the GUI.
+    :param library_name: library name
+    :param data_dir:
+    :param out_dir:
+    :return:
+    """
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hte_workflow.hci_gui_builder",
+            "--library-path", library_name,
+            "--data-dir", str(data_dir),
+            "--out-dir", str(out_dir),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    hci_file = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("HCI_FILE_PATH="):
+            hci_file = Path(line.split("=", 1)[1].strip())
+            break
+
+    return hci_file
+
+# ---------------------------------------------------------------------------
 # Run the BO script
 # ---------------------------------------------------------------------------
 def run_bo_script(prefix: str, hci_file: str, limiting: str, well_volume_ul: float,
@@ -619,6 +649,8 @@ def main() -> None:
         default=False,
         help="Use Bayesian optimization mode (True/False)",
     )
+    parser.add_argument("--gui", nargs = '?', const = True, default = False,
+                        help="Use GUI for HCI and Synthesis file (True/False)")
     parser.add_argument(
         "--data-dir",
         default=str(DATA_DIR),
@@ -647,17 +679,20 @@ def main() -> None:
         print(f"Library file {library_path} does not exist.")
         sys.exit(1)
 
-    if not args.hci_file:
-        hci_file_path, exp_name, exp_number = interactive_create_hci(library_path=library_path, out_dir=out_dir)
+    if args.gui and not args.hci_file:
+        hci_file_path = gui_create_hci(library_name=library_path, data_dir=data_dir, out_dir=out_dir)
+    elif not args.hci_file:
+        hci_file_path = interactive_create_hci(library_path=library_path, out_dir=out_dir)
     else:
         hci_file_path = str(out_dir/args.hci_file)
         if not os.path.exists(hci_file_path):
             print(f"HCI file {hci_file_path} does not exist.")
             sys.exit(1)
 
-        hci_doc = hci_to_optimizer_dict(hci_file_path)
-        exp_name = hci_doc.get("metadata").get("campaignName")
-        exp_number = hci_doc.get("metadata").get("batch", {}).get("batchID")
+    #relevant metadata parsing
+    hci_doc = hci_to_optimizer_dict(hci_file_path)
+    exp_name = hci_doc.get("metadata").get("campaignName")
+    exp_number = hci_doc.get("metadata").get("batch", {}).get("batchID")
 
     limiting = input("Limiting reagent name: ").strip()
     date_str = datetime.date.today().strftime("%Y%m%d")
@@ -681,7 +716,7 @@ def main() -> None:
             )
         elif args.synth_file:
             synthesis_file = str(args.synth_file)
-        elif _ask("Creative manual plate via visual? [y/n]", "y") == "y":
+        elif args.gui:
             synthesis_file = create_gui_synthesis_file(
                 prefix=prefix,
                 hci_file=hci_file_path,
