@@ -295,7 +295,7 @@ def gui_create_hci(*, library_name: str, data_dir: str | Path, out_dir: str | Pa
         [
             sys.executable,
             "-m",
-            "hte_workflow.hci_gui_builder",
+            "gui_interfaces.hci_gui_builder",
             "--library-path", library_name,
             "--data-dir", str(data_dir),
             "--out-dir", str(out_dir),
@@ -404,7 +404,7 @@ def create_gui_synthesis_file(prefix: str, hci_file: str, limiting: str, well_vo
         [
             sys.executable,
             "-m",
-            "hte_workflow.manual_plate_gui",
+            "gui_interfaces.manual_plate_gui",
             "--hci-file", str(hci_path),
             "--out", synthesis_file,
             "--limiting-name", limiting,
